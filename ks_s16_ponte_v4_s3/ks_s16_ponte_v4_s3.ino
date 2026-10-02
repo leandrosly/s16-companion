@@ -12,8 +12,10 @@
 
   Bibliotecas: NimBLE-Arduino 2.x (com o patch do GAP/GATT), LovyanGFX (lovyan03)
   Placa: "ESP32S3 Dev Module"
-         USB CDC On Boot: Enabled | Flash Size: 16MB | PSRAM: OPI PSRAM
-         Partition Scheme: "16M Flash (3MB APP/9.9MB FATFS)" (ou qualquer uma de 16MB)
+        USB CDC On Boot: Enabled | USB Mode: Hardware CDC and JTAG
+        Flash Size: 16MB | PSRAM: OPI PSRAM | JTAG Adapter: Disabled
+        Partition Scheme: "16M Flash (3MB APP/9.9MB FATFS)" (ou qualquer uma de 16MB)
+        PSRAM: OPI PSRAM
 */
 
 #include <Arduino.h>
