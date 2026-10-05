@@ -43,9 +43,25 @@ struct Map {
   NimBLECharacteristic* local = nullptr;
   bool remoteWriteNR = false;
   bool isMain = false;
-  bool phoneSub = false;      // celular assinou a caracteristica local
+  bool phoneSub = false;      // algum celular assinou a caracteristica local
   bool remoteSub = false;     // ESP32 assinou a remota
+  // Quais conexoes (celulares) assinaram esta caracteristica. Enviamos so para elas,
+  // uma a uma: mandar "para todos" deixava a NimBLE tentar notificar um celular que
+  // estava no meio da desconexao -> ponteiro nulo -> reinicio.
+  uint16_t subs[4] = {BLE_HS_CONN_HANDLE_NONE, BLE_HS_CONN_HANDLE_NONE,
+                      BLE_HS_CONN_HANDLE_NONE, BLE_HS_CONN_HANDLE_NONE};
 };
+
+static void subAdd(Map& m, uint16_t h) {
+  for (auto& s : m.subs) if (s == h) return;
+  for (auto& s : m.subs) if (s == BLE_HS_CONN_HANDLE_NONE) { s = h; break; }
+  m.phoneSub = true;
+}
+static void subRemove(Map& m, uint16_t h) {
+  bool any = false;
+  for (auto& s : m.subs) { if (s == h) s = BLE_HS_CONN_HANDLE_NONE; if (s != BLE_HS_CONN_HANDLE_NONE) any = true; }
+  m.phoneSub = any;
+}
 static std::vector<Map> maps;
 
 // ---- lado roda ----
@@ -133,9 +149,12 @@ static void parseFrame(const uint8_t* d, size_t len) {
 static void forwardToPhone(Map* m, const uint8_t* d, size_t len) {
   if (!phoneConnected || !m->phoneSub || !m->local) return;
   size_t maxLen = phoneMtu > 3 ? phoneMtu - 3 : 20;
-  for (size_t off = 0; off < len; off += maxLen) {
-    size_t n = min(maxLen, len - off);
-    m->local->notify(d + off, n);   // sem connHandle = todos os celulares que assinaram
+  for (uint16_t h : m->subs) {
+    if (h == BLE_HS_CONN_HANDLE_NONE) continue;
+    for (size_t off = 0; off < len; off += maxLen) {
+      size_t n = min(maxLen, len - off);
+      m->local->notify(d + off, n, h);   // so para este celular
+    }
   }
 }
 
@@ -180,10 +199,11 @@ class LocalChrCB : public NimBLECharacteristicCallbacks {
     int idx = findIdxByLocal(c);
     Serial.printf("Celular leu %s\n", idx >= 0 ? maps[idx].chrUuid.toString().c_str() : "?");
   }
-  void onSubscribe(NimBLECharacteristic* c, NimBLEConnInfo&, uint16_t subValue) override {
+  void onSubscribe(NimBLECharacteristic* c, NimBLEConnInfo& info, uint16_t subValue) override {
     int idx = findIdxByLocal(c);
     if (idx < 0) return;
-    if (subValue) maps[idx].phoneSub = true;   // com 2 celulares, so zera quando todos saem
+    if (subValue) subAdd(maps[idx], info.getConnHandle());
+    else          subRemove(maps[idx], info.getConnHandle());
     Serial.printf("Celular %s %s\n", subValue ? "assinou" : "cancelou",
                   maps[idx].chrUuid.toString().c_str());
   }
@@ -199,10 +219,10 @@ class ServerCB : public NimBLEServerCallbacks {
                   info.getAddress().toString().c_str(), info.getConnHandle(), phoneCount);
     if (phoneCount < MAX_PHONES) NimBLEDevice::getAdvertising()->start();
   }
-  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
+  void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
     if (phoneCount > 0) phoneCount--;
     phoneConnected = (phoneCount > 0);
-    if (!phoneConnected) for (auto& m : maps) m.phoneSub = false;
+    for (auto& m : maps) subRemove(m, info.getConnHandle());   // esquece as assinaturas dele
     Serial.printf("Celular desconectou apos %lu ms, motivo %d (0x%X) - restam %d\n",
                   (unsigned long)(millis() - phoneConnT), reason, reason, phoneCount);
     if (mainRemote) NimBLEDevice::getAdvertising()->start();
