@@ -1,5 +1,5 @@
 /*
-  Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular  (v4: 3 telas, buzina no BOOT, logs no SD, midia HID)
+  Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular  (v4: 3 telas, buzina no BOOT, logs no SD, midia HID em identidade propria)
 
   - Conecta na roda, descobre TODOS os servicos/caracteristicas.
   - Recria todos eles no servidor do ESP32 (exceto 0x1800/0x1801, que a pilha ja tem),
@@ -21,6 +21,7 @@
 #include <NimBLEDevice.h>
 #include <SD_MMC.h>          // antes da LovyanGFX
 #include <sys/time.h>
+#include <esp_mac.h>          // MAC do chip, para gerar o endereco do "S16 Controle"
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <vector>
@@ -166,12 +167,23 @@ static NimBLEServer* server = nullptr;
 static bool serverStarted = false;
 // Aceita mais de um celular ao mesmo tempo (e continua anunciando enquanto houver vaga).
 // Assim, se o Android "segurar" uma conexao velha, um app novo ainda consegue entrar.
-// Conexoes de "celular" que a ponte aceita ao mesmo tempo. Com o controle de midia (HID),
-// o proprio Android ocupa uma conexao so para ele. Para HID + 2 apps sao 3, e a NimBLE
-// precisa aceitar 4 no total (roda + 3): no nimconfig.h da biblioteca, linha 23:
-//     #define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 4
-// Se o nimconfig.h ficar no padrao (3), volte este valor para 2.
-static const int MAX_PHONES = 3;
+// ================= Duas identidades Bluetooth =================
+// O ESP32-S3 anuncia DOIS "aparelhos" ao mesmo tempo (extended advertising, 2 instancias):
+//   ADV_RODA: "KSN-S16P--..." com o endereco normal do ESP32, SEM pareamento -> os apps
+//             (EUC World, Mono Riders, KingSong), cada um com a sua conexao, como antes.
+//   ADV_HID:  "S16 Controle" com um endereco proprio, PAREADO -> so o controle de midia.
+// O Android trata cada endereco como um aparelho diferente, entao os apps nao dividem mais
+// a conexao com o controle de midia.
+// Requer no nimconfig.h:  CONFIG_BT_NIMBLE_EXT_ADV 1, CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES 2
+//                         e CONFIG_BT_NIMBLE_MAX_CONNECTIONS 4  (roda + 2 apps + controle)
+static const char* NOME_CONTROLE = "S16 Controle";
+static const int MAX_APPS = 2;
+static const uint8_t ADV_RODA = 0, ADV_HID = 1;
+static uint8_t hidAddrVal[6];                       // endereco "random static" do S16 Controle
+static volatile int appConns = 0;                   // apps conectados na identidade da roda
+static volatile uint16_t hidConnHandle = BLE_HS_CONN_HANDLE_NONE;   // conexao do controle
+static volatile bool advDirty = true;               // pede para o loop rever o anuncio
+static bool advConfigured = false;
 static volatile int phoneCount = 0;
 static volatile bool phoneConnected = false;
 static volatile uint16_t phoneMtu = 247;  // menor MTU entre os celulares conectados
@@ -473,28 +485,38 @@ class ServerCB : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
     if (phoneCount == 0) phoneMtu = 247;
     phoneCount++;
+    // Por qual identidade ele entrou? O endereco que NOS usamos nesta conexao diz.
+    struct ble_gap_conn_desc d;
+    bool viaHid = false;
+    if (ble_gap_conn_find(info.getConnHandle(), &d) == 0)
+      viaHid = MIDIA_HID && memcmp(d.our_ota_addr.val, hidAddrVal, 6) == 0;
+    if (viaHid) hidConnHandle = info.getConnHandle(); else appConns++;
     phoneConnected = true;
     phoneConnT = millis();
     Serial.printf("Celular conectado: %s (handle %u) - %d conectado(s)\n",
                   info.getAddress().toString().c_str(), info.getConnHandle(), phoneCount);
-    logEvent("app conectou %s (%d conectado(s))", info.getAddress().toString().c_str(), phoneCount);
-    if (phoneCount < MAX_PHONES) NimBLEDevice::getAdvertising()->start();
+    Serial.printf("  -> pela identidade %s (apps: %d)\n", viaHid ? NOME_CONTROLE : "da roda", appConns);
+    logEvent("%s conectou %s", viaHid ? "controle de midia" : "app", info.getAddress().toString().c_str());
+    advDirty = true;
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
     if (phoneCount > 0) phoneCount--;
+    if (info.getConnHandle() == hidConnHandle) hidConnHandle = BLE_HS_CONN_HANDLE_NONE;
+    else if (appConns > 0) appConns--;
     phoneConnected = (phoneCount > 0);
     for (auto& m : maps) subRemove(m, info.getConnHandle());   // esquece as assinaturas dele
     logEvent("app desconectou apos %lus, motivo 0x%X (restam %d)",
              (unsigned long)((millis() - phoneConnT) / 1000), reason, phoneCount);
     Serial.printf("Celular desconectou apos %lu ms, motivo %d (0x%X) - restam %d\n",
                   (unsigned long)(millis() - phoneConnT), reason, reason, phoneCount);
-    if (mainRemote) NimBLEDevice::getAdvertising()->start();
+    advDirty = true;
   }
   void onAuthenticationComplete(NimBLEConnInfo& info) override {
     Serial.printf("Celular pediu seguranca: cifrado=%d pareado=%d\n", info.isEncrypted(), info.isBonded());
   }
-  void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override {
-    if (mtu < phoneMtu) phoneMtu = mtu;
+  void onMTUChange(uint16_t mtu, NimBLEConnInfo& info) override {
+    // o MTU da conexao do controle de midia nao importa: ela nao recebe os dados da roda
+    if (info.getConnHandle() != hidConnHandle && mtu < phoneMtu) phoneMtu = mtu;
     Serial.printf("MTU do celular: %u\n", mtu);
   }
 } serverCB;
@@ -705,16 +727,59 @@ static void mapGatt() {
 
 static void startAdvertisingAsWheel() {
   NimBLEDevice::setDeviceName(wheelAdvName);   // nome GAP (0x2A00) igual ao da roda
-  NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-  adv->stop();
-  adv->setName(wheelAdvName);
-  for (auto& u : wheelAdvUuids) adv->addServiceUUID(u);
-  if (MIDIA_HID) adv->addServiceUUID(NimBLEUUID((uint16_t)0x1812));   // para o Android ver como controle
-  if (wheelAdvUuids.empty()) adv->addServiceUUID(MAIN_SVC);
-  if (!wheelMfgData.empty()) adv->setManufacturerData(wheelMfgData);
-  adv->enableScanResponse(true);
-  adv->start();
-  Serial.printf("Anunciando como \"%s\"\n", wheelAdvName.c_str());
+  NimBLEExtAdvertising* adv = NimBLEDevice::getAdvertising();
+
+  // Identidade 1: a roda (anuncio "legado", que todo celular entende)
+  NimBLEExtAdvertisement roda;
+  roda.setLegacyAdvertising(true);
+  roda.setConnectable(true);
+  roda.setScannable(true);
+  roda.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+  roda.setName(wheelAdvName);
+  for (auto& u : wheelAdvUuids) roda.addServiceUUID(u);
+  if (wheelAdvUuids.empty()) roda.addServiceUUID(MAIN_SVC);
+  adv->setInstanceData(ADV_RODA, roda);
+  NimBLEExtAdvertisement respRoda;                // resposta ao "scan ativo"
+  respRoda.setLegacyAdvertising(true);
+  if (!wheelMfgData.empty()) respRoda.setManufacturerData(wheelMfgData);
+  adv->setScanResponseData(ADV_RODA, respRoda);
+
+  // Identidade 2: o controle de midia, com endereco proprio
+  if (MIDIA_HID) {
+    NimBLEExtAdvertisement hid;
+    hid.setLegacyAdvertising(true);
+    hid.setConnectable(true);
+    hid.setScannable(true);
+    hid.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+    hid.setName(NOME_CONTROLE);
+    hid.setAppearance(0x0180);                    // "controle remoto generico"
+    hid.addServiceUUID(NimBLEUUID((uint16_t)0x1812));
+    ble_addr_t a;
+    a.type = BLE_ADDR_RANDOM;
+    memcpy(a.val, hidAddrVal, 6);
+    hid.setAddress(NimBLEAddress(a));
+    adv->setInstanceData(ADV_HID, hid);
+    NimBLEExtAdvertisement respHid;
+    respHid.setLegacyAdvertising(true);
+    adv->setScanResponseData(ADV_HID, respHid);
+  }
+  advConfigured = true;
+  advDirty = true;
+  Serial.printf("Anunciando como \"%s\"%s\n", wheelAdvName.c_str(),
+                MIDIA_HID ? " e como \"S16 Controle\"" : "");
+}
+
+// Liga/desliga cada anuncio conforme as vagas. Chamado pelo loop.
+static void updateAdvertising() {
+  static uint32_t last = 0;
+  if (!advConfigured || (!advDirty && millis() - last < 1000)) return;
+  advDirty = false;
+  last = millis();
+  NimBLEExtAdvertising* adv = NimBLEDevice::getAdvertising();
+  bool queroRoda = mainRemote && appConns < MAX_APPS;
+  bool queroHid  = MIDIA_HID && hidConnHandle == BLE_HS_CONN_HANDLE_NONE;
+  if (queroRoda != adv->isActive(ADV_RODA)) { if (queroRoda) adv->start(ADV_RODA); else adv->stop(ADV_RODA); }
+  if (MIDIA_HID && queroHid != adv->isActive(ADV_HID)) { if (queroHid) adv->start(ADV_HID); else adv->stop(ADV_HID); }
 }
 
 // ================= Cliente (lado roda) =================
@@ -754,8 +819,10 @@ class ClientCB : public NimBLEClientCallbacks {
     }
     Serial.printf("Roda desconectou (%d)\n", reason);
     logEvent("roda desconectou (motivo 0x%X)", reason);
-    NimBLEDevice::getAdvertising()->stop();
-    if (server) for (uint16_t h : server->getPeerDevices()) server->disconnect(h);
+    NimBLEDevice::getAdvertising()->stop(ADV_RODA);
+    advDirty = true;
+    // derruba os apps (ficariam sem dados), mas mantem o controle de midia conectado
+    if (server) for (uint16_t h : server->getPeerDevices()) if (h != hidConnHandle) server->disconnect(h);
     needScan = true;
   }
 } clientCB;
@@ -925,16 +992,14 @@ static void drawTopBar() {
   spr.setTextColor(wheelOk ? TFT_GREEN : TFT_RED);
   spr.drawString("RODA", 4, 11);
   // APP n: quantos apps estao recebendo os dados da roda (assinaram a FFE1)
-  int apps = 0;
-  for (auto& m : maps) if (m.isMain) for (uint16_t h : m.subs) if (h != BLE_HS_CONN_HANDLE_NONE) apps++;
+  int apps = appConns;
   char ap[8];
   if (apps > 0) snprintf(ap, sizeof(ap), "APP %d", apps); else strcpy(ap, "APP");
   spr.setTextColor(apps > 0 ? TFT_CYAN : COL_FRAME);
   spr.drawString(ap, 44, 11);
   // nota musical: controle de midia (HID) ativo no celular
   if (MIDIA_HID) {
-    struct ble_gap_conn_desc desc;
-    bool hidOk = hidAtivo && ble_gap_conn_find(hidHandle, &desc) == 0;   // a conexao ainda existe?
+    bool hidOk = hidAtivo && hidConnHandle != BLE_HS_CONN_HANDLE_NONE;
     uint16_t cn = hidOk ? TFT_MAGENTA : COL_FRAME;
     spr.fillCircle(92, 15, 3, cn);
     spr.drawFastVLine(95, 4, 12, cn);
@@ -1341,6 +1406,15 @@ void setup() {
 
   NimBLEDevice::init("");
   NimBLEDevice::setMTU(247);
+  {
+    // Endereco do "S16 Controle": o MAC Bluetooth do chip, com os 2 bits mais altos ligados
+    // (e o que caracteriza um endereco "random static"). Fixo: o celular reconhece sempre.
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_BT);
+    for (int k = 0; k < 6; k++) hidAddrVal[k] = mac[5 - k];   // ordem invertida (little-endian)
+    hidAddrVal[0] ^= 0x01;                                    // diferente do endereco da roda
+    hidAddrVal[5] |= 0xC0;
+  }
   if (MIDIA_HID) {
     // Pareamento "so confirmar" (sem PIN), com bonding (o celular lembra do display)
     NimBLEDevice::setSecurityAuth(true, false, true);
@@ -1385,6 +1459,7 @@ void loop() {
   writeRideLine();
   handleSerialConsole();
   if (MIDIA_HID) hidSoltar();
+  updateAdvertising();
 
   // Diagnostico: quanto sobrou, no pior momento, da pilha da tarefa do Bluetooth.
   // Os callbacks (repasse, logs, Serial) rodam nela. Se chegar perto de 0, ela "transborda"

@@ -1,3 +1,11 @@
+/* ===== PATCH ponte S16: igualar Generic Access ao da roda ===== */
+#define MYNEWT_VAL_BLE_SVC_GAP_DEVICE_NAME_WRITE_PERM (0)
+#define MYNEWT_VAL_BLE_SVC_GAP_APPEARANCE_WRITE_PERM  (0)
+#define MYNEWT_VAL_BLE_SVC_GAP_PPCP_MIN_CONN_INTERVAL (16)
+#define MYNEWT_VAL_BLE_SVC_GAP_PPCP_MAX_CONN_INTERVAL (32)
+#define MYNEWT_VAL_BLE_SVC_GAP_PPCP_SLAVE_LATENCY     (0)
+#define MYNEWT_VAL_BLE_SVC_GAP_PPCP_SUPERVISION_TMO   (400)
+/* ============================================================== */
 /*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -16,15 +24,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
-/* ===== PATCH ponte S16: igualar Generic Access ao da roda ===== */
-#define MYNEWT_VAL_BLE_SVC_GAP_DEVICE_NAME_WRITE_PERM (0)
-#define MYNEWT_VAL_BLE_SVC_GAP_APPEARANCE_WRITE_PERM  (0)
-#define MYNEWT_VAL_BLE_SVC_GAP_PPCP_MIN_CONN_INTERVAL (16)
-#define MYNEWT_VAL_BLE_SVC_GAP_PPCP_MAX_CONN_INTERVAL (32)
-#define MYNEWT_VAL_BLE_SVC_GAP_PPCP_SLAVE_LATENCY     (0)
-#define MYNEWT_VAL_BLE_SVC_GAP_PPCP_SUPERVISION_TMO   (400)
-/* ============================================================== */
 
 #include <assert.h>
 #include <string.h>
