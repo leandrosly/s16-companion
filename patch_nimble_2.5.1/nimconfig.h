@@ -20,7 +20,7 @@
  **********************************************/
 
 /** @brief Un-comment to change the number of simultaneous connections (esp controller max is 9) */
-#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 4   /* PATCH S16: roda + 2 apps + controle de midia */
+#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 6   /* PATCH S16: o controlador do ESP32-S3 recebe MAX+2 "atividades"; com anuncio estendido, conexoes + anuncios precisam caber em MAX-1. 6 = roda + 2 apps + controle + anuncios */
 
 /** @brief Un-comment to enable storing the timestamp when an attribute value is updated\n
  *  This allows for checking the last update time using getTimeStamp() or getValue(time_t*)\n
@@ -45,7 +45,7 @@
  ***************************************************/
 
 /** @brief Un-comment to enable extended advertising */
-#define CONFIG_BT_NIMBLE_EXT_ADV 1   /* PATCH S16: anunciar 2 identidades */
+#define CONFIG_BT_NIMBLE_EXT_ADV 1   /* PATCH S16: anuncio estendido (v5 MIDIA usa 2 identidades) */
 
 /** @brief Un-comment to set the max number of extended advertising instances (Range: 0 - 4) */
 #define CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES 2   /* PATCH S16: roda + S16 Controle */

@@ -7,7 +7,7 @@ Pasta da biblioteca: `Documents\Arduino\libraries\NimBLE-Arduino\src\`
 
 | Arquivo | Destino (dentro de `src\`) | Por quê |
 |---|---|---|
-| `nimconfig.h` | `nimconfig.h` | 4 conexões (roda + 2 apps + controle de mídia) e anúncio estendido com 2 identidades |
+| `nimconfig.h` | `nimconfig.h` | Anúncio estendido com 2 instâncias (a v5 MIDIA anuncia 2 identidades) e **6 conexões**: o rádio do ESP32-S3 é configurado a partir desse número, e com o padrão (3) os anúncios são recusados |
 | `ble_svc_gap.c` | `nimble\nimble\host\services\gap\src\` | Generic Access igual ao da roda (2A00/2A01 com escrita, 2A04, 2AC9) — o EUC World confere |
 | `ble_svc_gatt.c` | `nimble\nimble\host\services\gatt\src\` | Generic Attribute igual ao da roda (só 2A05, com Read) |
 | `ble_gap.c` | `nimble\nimble\host\src\` | Corrige bug: arrays indexados pelo número da conexão estouravam com handle ≥ 4 (reinícios ao desconectar) |

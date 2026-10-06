@@ -1,5 +1,9 @@
 /*
-  Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular  (v4: 3 telas, buzina no BOOT, logs no SD, midia HID em identidade propria)
+  Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
+  v5 "2APPS": ate 2 apps ao mesmo tempo (ex.: EUC World gravando + app da KingSong)
+
+  O radio do ESP32 aguenta 3 "atividades" (conexoes + anuncios) ao mesmo tempo.
+  Esta versao usa: roda + 2 apps. Para controlar a musica do celular, use a v5 "MIDIA".
 
   - Conecta na roda, descobre TODOS os servicos/caracteristicas.
   - Recria todos eles no servidor do ESP32 (exceto 0x1800/0x1801, que a pilha ja tem),
@@ -10,7 +14,7 @@
     escritas do celular em qualquer caracteristica -> roda.
   - FFE1 e sempre assinada (para a tela); as demais so quando o celular assina.
 
-  Bibliotecas: NimBLE-Arduino 2.x (com o patch do GAP/GATT), LovyanGFX (lovyan03)
+  Bibliotecas: NimBLE-Arduino 2.5.1 COM O PATCH (pasta patch_nimble_2.5.1), LovyanGFX (lovyan03)
   Placa: "ESP32S3 Dev Module"
          USB CDC On Boot: Enabled | USB Mode: Hardware CDC and JTAG
          Flash Size: 16MB | PSRAM: OPI PSRAM | JTAG Adapter: Disabled
@@ -21,24 +25,46 @@
 #include <NimBLEDevice.h>
 #include <SD_MMC.h>          // antes da LovyanGFX
 #include <sys/time.h>
-#include <esp_mac.h>          // MAC do chip, para gerar o endereco do "S16 Controle"
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <vector>
+#include <Preferences.h>     // guarda a configuracao na flash (sobrevive ao desligar)
 
 // ================= Configuracao =================
-static const char* NAME_FILTER = "KS";
-static const char* TARGET_MAC  = "";       // ex.: "c5:39:32:38:4c:4b"
-static const bool DUMP_HEX  = false;       // frames da FFE1 vindos da roda (R>) - muito volume
-static const bool DUMP_PHONE = true;       // tudo que o CELULAR faz: leituras, escritas, assinaturas
-static const bool DUMP_NOVOS = true;       // frames da roda de tipos que NAO aparecem no fluxo normal (R?)
-// Servico "estranho" de teste na GATT (ja provou que o EUC World tolera servicos extras)
-static const bool TESTE_SERVICO_EXTRA = false;
-// EXPERIMENTO: o display tambem se apresenta como CONTROLE DE MIDIA Bluetooth (HID).
-// Os botoes anterior / play-pause / proxima vao direto para o celular (Spotify etc.).
-// Exige parear UMA VEZ nas configuracoes de Bluetooth do Android. false = como antes.
-static const bool MIDIA_HID = true;
-static const bool DUMP_OTHER = true;       // trafego nas OUTRAS caracteristicas (raro, interessante)
+// Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
+//     DUMP_OTHER = false        (ou "DUMP_OTHER 0", "DUMP_OTHER off")
+//     config                    (mostra todos os valores atuais)
+//     config padrao             (volta tudo para os valores abaixo)
+// As mudancas ficam guardadas na flash e valem tambem depois de desligar.
+// NAME_FILTER e TARGET_MAC so fazem efeito na proxima busca pela roda (reinicie o display).
+static String NAME_FILTER = "KS";
+static String TARGET_MAC  = "";            // ex.: "c5:39:32:38:4c:4b"  (vazio = usa o NAME_FILTER)
+static bool DUMP_HEX   = false;            // frames da FFE1 vindos da roda (R>) - muito volume
+static bool DUMP_PHONE = true;             // tudo que o CELULAR faz: leituras, escritas, assinaturas
+static bool DUMP_NOVOS = true;             // frames da roda de tipos que NAO aparecem no fluxo normal (R?)
+static bool DUMP_OTHER = true;             // trafego nas OUTRAS caracteristicas (raro, interessante)
+// Quando dois apps dividem a MESMA conexao (o Android faz isso por conta propria), um app que
+// fecha "cancela a assinatura" da FFE1 e corta os dados do outro junto - era o Mono Riders
+// derrubando o EUC World. Com esta opcao, o display ignora o cancelamento e continua mandando
+// os dados enquanto a conexao existir. Quem nao quiser mais dados fecha a conexao de verdade.
+static bool IGNORA_CANCELAR = true;
+
+// ---- tabela das opcoes (para o console e para salvar/carregar) ----
+struct OpcaoBool  { const char* nome; bool* valor; bool padrao; };
+struct OpcaoTexto { const char* nome; String* valor; const char* padrao; };
+static OpcaoBool OPCOES_BOOL[] = {
+  { "DUMP_HEX",   &DUMP_HEX,   false },
+  { "DUMP_PHONE", &DUMP_PHONE, true  },
+  { "DUMP_NOVOS", &DUMP_NOVOS, true  },
+  { "DUMP_OTHER", &DUMP_OTHER, true  },
+  { "IGNORA_CANCELAR", &IGNORA_CANCELAR, true },
+};
+static OpcaoTexto OPCOES_TEXTO[] = {
+  { "NAME_FILTER", &NAME_FILTER, "KS" },
+  { "TARGET_MAC",  &TARGET_MAC,  ""   },
+};
+static Preferences prefs;
+
 
 static NimBLEUUID MAIN_SVC("FFE0");
 static NimBLEUUID MAIN_CHR("FFE1");
@@ -165,23 +191,13 @@ static std::vector<NimBLEUUID> wheelAdvUuids;
 // ---- lado celular ----
 static NimBLEServer* server = nullptr;
 static bool serverStarted = false;
-// Aceita mais de um celular ao mesmo tempo (e continua anunciando enquanto houver vaga).
-// Assim, se o Android "segurar" uma conexao velha, um app novo ainda consegue entrar.
-// ================= Duas identidades Bluetooth =================
-// O ESP32-S3 anuncia DOIS "aparelhos" ao mesmo tempo (extended advertising, 2 instancias):
-//   ADV_RODA: "KSN-S16P--..." com o endereco normal do ESP32, SEM pareamento -> os apps
-//             (EUC World, Mono Riders, KingSong), cada um com a sua conexao, como antes.
-//   ADV_HID:  "S16 Controle" com um endereco proprio, PAREADO -> so o controle de midia.
-// O Android trata cada endereco como um aparelho diferente, entao os apps nao dividem mais
-// a conexao com o controle de midia.
-// Requer no nimconfig.h:  CONFIG_BT_NIMBLE_EXT_ADV 1, CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES 2
-//                         e CONFIG_BT_NIMBLE_MAX_CONNECTIONS 4  (roda + 2 apps + controle)
-static const char* NOME_CONTROLE = "S16 Controle";
+// ================= Anuncio =================
+// Usa o anuncio "estendido" da NimBLE (mesma configuracao de biblioteca da v5 MIDIA),
+// com uma instancia so: a identidade da roda, sem pareamento.
+// Orcamento do radio (3 atividades): roda + 2 apps. O anuncio para quando os 2 entram.
 static const int MAX_APPS = 2;
-static const uint8_t ADV_RODA = 0, ADV_HID = 1;
-static uint8_t hidAddrVal[6];                       // endereco "random static" do S16 Controle
-static volatile int appConns = 0;                   // apps conectados na identidade da roda
-static volatile uint16_t hidConnHandle = BLE_HS_CONN_HANDLE_NONE;   // conexao do controle
+static const uint8_t ADV_RODA = 0;
+static volatile int appConns = 0;                   // apps conectados
 static volatile bool advDirty = true;               // pede para o loop rever o anuncio
 static bool advConfigured = false;
 static volatile int phoneCount = 0;
@@ -459,7 +475,7 @@ class LocalChrCB : public NimBLECharacteristicCallbacks {
     if (m.remoteWriteNR) {
       m.remote->writeValue(v.data(), v.size(), false);   // rapido, seguro no callback
     } else {
-      static PendingWrite pw;   // static: nao ocupa a pilha (pequena) da tarefa do Bluetooth                                    // com resposta -> faz no loop
+      static PendingWrite pw;   // static: nao ocupa a pilha (pequena) da tarefa do Bluetooth
       pw.idx = idx;
       pw.len = (uint16_t)std::min((size_t)sizeof(pw.data), (size_t)v.size());
       memcpy(pw.data, v.data(), pw.len);
@@ -474,8 +490,16 @@ class LocalChrCB : public NimBLECharacteristicCallbacks {
   void onSubscribe(NimBLECharacteristic* c, NimBLEConnInfo& info, uint16_t subValue) override {
     int idx = findIdxByLocal(c);
     if (idx < 0) return;
-    if (subValue) subAdd(maps[idx], info.getConnHandle());
-    else          subRemove(maps[idx], info.getConnHandle());
+    if (subValue) {
+      subAdd(maps[idx], info.getConnHandle());
+    } else if (maps[idx].isMain && IGNORA_CANCELAR) {
+      // nao remove: a conexao pode estar levando outro app "de carona" (ver IGNORA_CANCELAR)
+      Serial.printf("Celular cancelou %s (handle %u) - ignorado, os dados continuam ate a conexao fechar\n",
+                    maps[idx].chrUuid.toString().c_str(), info.getConnHandle());
+      return;
+    } else {
+      subRemove(maps[idx], info.getConnHandle());
+    }
     Serial.printf("Celular %s %s\n", subValue ? "assinou" : "cancelou",
                   maps[idx].chrUuid.toString().c_str());
   }
@@ -485,28 +509,20 @@ class ServerCB : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
     if (phoneCount == 0) phoneMtu = 247;
     phoneCount++;
-    // Por qual identidade ele entrou? O endereco que NOS usamos nesta conexao diz.
-    struct ble_gap_conn_desc d;
-    bool viaHid = false;
-    if (ble_gap_conn_find(info.getConnHandle(), &d) == 0)
-      viaHid = MIDIA_HID && memcmp(d.our_ota_addr.val, hidAddrVal, 6) == 0;
-    if (viaHid) hidConnHandle = info.getConnHandle(); else appConns++;
+    appConns++;
     phoneConnected = true;
     phoneConnT = millis();
     Serial.printf("Celular conectado: %s (handle %u) - %d conectado(s)\n",
                   info.getAddress().toString().c_str(), info.getConnHandle(), phoneCount);
-    Serial.printf("  -> pela identidade %s (apps: %d)\n", viaHid ? NOME_CONTROLE : "da roda", appConns);
-    logEvent("%s conectou %s", viaHid ? "controle de midia" : "app", info.getAddress().toString().c_str());
+    logEvent("app conectou %s (%d conectado(s))", info.getAddress().toString().c_str(), appConns);
     advDirty = true;
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
     if (phoneCount > 0) phoneCount--;
-    if (info.getConnHandle() == hidConnHandle) hidConnHandle = BLE_HS_CONN_HANDLE_NONE;
-    else if (appConns > 0) appConns--;
+    if (appConns > 0) appConns--;
     phoneConnected = (phoneCount > 0);
     for (auto& m : maps) subRemove(m, info.getConnHandle());   // esquece as assinaturas dele
-    logEvent("app desconectou apos %lus, motivo 0x%X (restam %d)",
-             (unsigned long)((millis() - phoneConnT) / 1000), reason, phoneCount);
+    logEvent("app desconectou, motivo 0x%X (restam %d)", reason, appConns);
     Serial.printf("Celular desconectou apos %lu ms, motivo %d (0x%X) - restam %d\n",
                   (unsigned long)(millis() - phoneConnT), reason, reason, phoneCount);
     advDirty = true;
@@ -515,8 +531,7 @@ class ServerCB : public NimBLEServerCallbacks {
     Serial.printf("Celular pediu seguranca: cifrado=%d pareado=%d\n", info.isEncrypted(), info.isBonded());
   }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo& info) override {
-    // o MTU da conexao do controle de midia nao importa: ela nao recebe os dados da roda
-    if (info.getConnHandle() != hidConnHandle && mtu < phoneMtu) phoneMtu = mtu;
+    if (mtu < phoneMtu) phoneMtu = mtu;
     Serial.printf("MTU do celular: %u\n", mtu);
   }
 } serverCB;
@@ -586,93 +601,6 @@ static void recordTemplate() {
   }
 }
 
-// ================= Controle de midia (HID over GATT) =================
-// Um "teclado" que so tem as teclas de midia. O Android le o Report Map, entende que
-// e um controle de midia e repassa as teclas para o app que estiver tocando.
-// Cada aperto = 1 byte com um bit ligado (tecla pressionada) e, logo depois, 0 (solta).
-static const uint8_t HID_REPORT_MAP[] = {
-  0x05, 0x0C,   // Usage Page (Consumer)          - "teclas de consumo" (midia)
-  0x09, 0x01,   // Usage (Consumer Control)
-  0xA1, 0x01,   // Collection (Application)
-  0x85, 0x01,   //   Report ID (1)
-  0x15, 0x00,   //   Logical Minimum (0)
-  0x25, 0x01,   //   Logical Maximum (1)
-  0x75, 0x01,   //   Report Size (1 bit por tecla)
-  0x95, 0x08,   //   Report Count (8 teclas)
-  0x09, 0xB5,   //   bit 0: Scan Next Track      (proxima)
-  0x09, 0xB6,   //   bit 1: Scan Previous Track  (anterior)
-  0x09, 0xCD,   //   bit 2: Play/Pause
-  0x09, 0xE9,   //   bit 3: Volume Up    (do celular)
-  0x09, 0xEA,   //   bit 4: Volume Down  (do celular)
-  0x09, 0xE2,   //   bit 5: Mute
-  0x09, 0xB7,   //   bit 6: Stop
-  0x09, 0xCD,   //   bit 7: (repete play/pause, so para completar 8 bits)
-  0x81, 0x02,   //   Input (Data, Variable, Absolute)
-  0xC0          // End Collection
-};
-static const uint8_t HID_PROXIMA = 0x01, HID_ANTERIOR = 0x02, HID_PLAY = 0x04,
-                     HID_VOL_MAIS = 0x08, HID_VOL_MENOS = 0x10;
-
-static NimBLECharacteristic* hidInput = nullptr;
-static uint32_t hidSoltarEm = 0;
-static bool hidAtivo = false;      // o celular (o "host HID" do Android) assinou as teclas
-static uint16_t hidHandle = BLE_HS_CONN_HANDLE_NONE;   // conexao que assinou
-
-class HidCB : public NimBLECharacteristicCallbacks {
-  void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo& info, uint16_t subValue) override {
-    hidAtivo = subValue != 0;
-    hidHandle = info.getConnHandle();
-    Serial.printf("Controle de midia %s (handle %u, cifrado=%d)\n",
-                  hidAtivo ? "ATIVO no celular" : "desativado", info.getConnHandle(), info.isEncrypted());
-    logEvent("controle de midia %s", hidAtivo ? "ativo" : "desativado");
-  }
-} hidCB;
-
-static void buildHid() {
-  NimBLEService* hid = server->createService(NimBLEUUID((uint16_t)0x1812));
-  const uint8_t info[4] = {0x11, 0x01, 0x00, 0x02};          // HID 1.11, sem pais, "normally connectable"
-  hid->createCharacteristic(NimBLEUUID((uint16_t)0x2A4A), NIMBLE_PROPERTY::READ)->setValue(info, sizeof(info));
-  hid->createCharacteristic(NimBLEUUID((uint16_t)0x2A4B), NIMBLE_PROPERTY::READ)
-     ->setValue(HID_REPORT_MAP, sizeof(HID_REPORT_MAP));
-  hid->createCharacteristic(NimBLEUUID((uint16_t)0x2A4C), NIMBLE_PROPERTY::WRITE_NR);   // HID Control Point
-  const uint8_t modo = 0x01;                                                            // "report mode"
-  hid->createCharacteristic(NimBLEUUID((uint16_t)0x2A4E), NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE_NR)
-     ->setValue(&modo, 1);
-  // A caracteristica das teclas: so pode ser lida com a conexao cifrada (pareada), como o Android exige
-  hidInput = hid->createCharacteristic(NimBLEUUID((uint16_t)0x2A4D),
-                                       NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC);
-  const uint8_t ref[2] = {0x01, 0x01};                       // Report ID 1, tipo "entrada"
-  hidInput->createDescriptor(NimBLEUUID((uint16_t)0x2908), NIMBLE_PROPERTY::READ, 2)->setValue(ref, 2);
-  const uint8_t zero = 0;
-  hidInput->setValue(&zero, 1);
-  hidInput->setCallbacks(&hidCB);
-  hid->start();
-
-  // Servico de bateria: o Android espera encontrar um junto com o HID
-  NimBLEService* bat = server->createService(NimBLEUUID((uint16_t)0x180F));
-  const uint8_t nivel = 100;
-  bat->createCharacteristic(NimBLEUUID((uint16_t)0x2A19), NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY)
-     ->setValue(&nivel, 1);
-  bat->start();
-  Serial.println("Controle de midia (HID) incluido na GATT");
-}
-
-// "Aperta" uma tecla de midia; o loop "solta" 40 ms depois
-static void hidTecla(uint8_t bits) {
-  if (!hidInput) return;
-  if (!hidAtivo) Serial.println("Controle de midia ainda nao ativo: pareie o display no Bluetooth do celular");
-  hidInput->setValue(&bits, 1);
-  hidInput->notify();
-  hidSoltarEm = millis() + 40;
-}
-static void hidSoltar() {
-  if (!hidSoltarEm || millis() < hidSoltarEm) return;
-  hidSoltarEm = 0;
-  const uint8_t zero = 0;
-  hidInput->setValue(&zero, 1);
-  hidInput->notify();
-}
-
 static void buildServer() {
   for (auto& si : gattTemplate) {
     NimBLEService* ls = server->createService(si.uuid);
@@ -687,13 +615,6 @@ static void buildServer() {
       }
     }
     ls->start();
-  }
-  if (MIDIA_HID) buildHid();
-  if (TESTE_SERVICO_EXTRA) {
-    NimBLEService* extra = server->createService("8a1b0000-0000-4000-8000-00000000abcd");
-    extra->createCharacteristic("8a1b0001-0000-4000-8000-00000000abcd", NIMBLE_PROPERTY::READ)->setValue("teste");
-    extra->start();
-    Serial.println("Servico extra de teste incluido na GATT");
   }
   server->start();
   serverStarted = true;
@@ -744,29 +665,9 @@ static void startAdvertisingAsWheel() {
   if (!wheelMfgData.empty()) respRoda.setManufacturerData(wheelMfgData);
   adv->setScanResponseData(ADV_RODA, respRoda);
 
-  // Identidade 2: o controle de midia, com endereco proprio
-  if (MIDIA_HID) {
-    NimBLEExtAdvertisement hid;
-    hid.setLegacyAdvertising(true);
-    hid.setConnectable(true);
-    hid.setScannable(true);
-    hid.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
-    hid.setName(NOME_CONTROLE);
-    hid.setAppearance(0x0180);                    // "controle remoto generico"
-    hid.addServiceUUID(NimBLEUUID((uint16_t)0x1812));
-    ble_addr_t a;
-    a.type = BLE_ADDR_RANDOM;
-    memcpy(a.val, hidAddrVal, 6);
-    hid.setAddress(NimBLEAddress(a));
-    adv->setInstanceData(ADV_HID, hid);
-    NimBLEExtAdvertisement respHid;
-    respHid.setLegacyAdvertising(true);
-    adv->setScanResponseData(ADV_HID, respHid);
-  }
   advConfigured = true;
   advDirty = true;
-  Serial.printf("Anunciando como \"%s\"%s\n", wheelAdvName.c_str(),
-                MIDIA_HID ? " e como \"S16 Controle\"" : "");
+  Serial.printf("Anunciando como \"%s\"\n", wheelAdvName.c_str());
 }
 
 // Liga/desliga cada anuncio conforme as vagas. Chamado pelo loop.
@@ -777,7 +678,6 @@ static void updateAdvertising() {
   last = millis();
   NimBLEExtAdvertising* adv = NimBLEDevice::getAdvertising();
   bool queroRoda = mainRemote && appConns < MAX_APPS;
-  bool queroHid  = MIDIA_HID && hidConnHandle == BLE_HS_CONN_HANDLE_NONE;
   // Diagnostico: mostra cada mudanca e, principalmente, quando o controlador RECUSA ligar um anuncio
   static uint32_t ultimoAvisoFalha = 0;
   auto ajusta = [&](uint8_t inst, bool quero, const char* nome) {
@@ -794,7 +694,6 @@ static void updateAdvertising() {
     }
   };
   ajusta(ADV_RODA, queroRoda, "roda");
-  if (MIDIA_HID) ajusta(ADV_HID, queroHid, "S16 Controle");
 }
 
 // ================= Cliente (lado roda) =================
@@ -802,9 +701,9 @@ class ScanCB : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice* dev) override {
     if (target) return;
     std::string name = dev->getName();
-    bool match = strlen(TARGET_MAC)
-                   ? dev->getAddress().toString() == TARGET_MAC
-                   : (!name.empty() && name.find(NAME_FILTER) != std::string::npos);
+    bool match = TARGET_MAC.length()
+                   ? dev->getAddress().toString() == std::string(TARGET_MAC.c_str())
+                   : (!name.empty() && name.find(NAME_FILTER.c_str()) != std::string::npos);
     if (!match) return;
     target = dev;
     NimBLEDevice::getScan()->stop();
@@ -836,8 +735,8 @@ class ClientCB : public NimBLEClientCallbacks {
     logEvent("roda desconectou (motivo 0x%X)", reason);
     NimBLEDevice::getAdvertising()->stop(ADV_RODA);
     advDirty = true;
-    // derruba os apps (ficariam sem dados), mas mantem o controle de midia conectado
-    if (server) for (uint16_t h : server->getPeerDevices()) if (h != hidConnHandle) server->disconnect(h);
+    // derruba os apps (ficariam sem dados)
+    if (server) for (uint16_t h : server->getPeerDevices()) server->disconnect(h);
     needScan = true;
   }
 } clientCB;
@@ -853,10 +752,69 @@ static void sendKs(uint8_t cmd, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5) 
 }
 static void sendCmd(uint8_t cmd) { sendKs(cmd, 0, 0, 0, 0); }
 
+// ---------- Configuracao pelo Serial ----------
+// (funcoes ficam aqui embaixo, e nao junto das variaveis no topo, porque o Arduino cria
+//  "prototipos" de todas as funcoes antes da primeira funcao do arquivo - se ela viesse
+//  antes das structs, os prototipos citariam tipos que ainda nao existem)
+static void carregarConfig() {
+  prefs.begin("s16cfg", true);                 // true = so leitura
+  for (auto& o : OPCOES_BOOL)  *o.valor = prefs.getBool(o.nome, o.padrao);
+  for (auto& o : OPCOES_TEXTO) *o.valor = prefs.getString(o.nome, o.padrao);
+  prefs.end();
+}
+
+static void mostrarConfig() {
+  Serial.println("--- configuracao ---");
+  for (auto& o : OPCOES_BOOL)  Serial.printf("  %-16s = %s\n", o.nome, *o.valor ? "true" : "false");
+  for (auto& o : OPCOES_TEXTO) Serial.printf("  %-16s = \"%s\"\n", o.nome, o.valor->c_str());
+}
+
+// Tenta interpretar a linha como "NOME = valor" (ou "NOME valor"). Devolve false se nao for.
+static bool comandoConfig(String linha) {
+  linha.trim();
+  if (linha == "config") { mostrarConfig(); return true; }
+  if (linha == "config padrao") {
+    prefs.begin("s16cfg", false); prefs.clear(); prefs.end();
+    for (auto& o : OPCOES_BOOL)  *o.valor = o.padrao;
+    for (auto& o : OPCOES_TEXTO) *o.valor = o.padrao;
+    Serial.println("Configuracao de fabrica restaurada");
+    mostrarConfig();
+    return true;
+  }
+  linha.replace("=", " ");
+  int esp = linha.indexOf(' ');
+  String nome = (esp < 0) ? linha : linha.substring(0, esp);
+  String valor = (esp < 0) ? "" : linha.substring(esp + 1);
+  nome.trim(); valor.trim();
+  nome.toUpperCase();
+
+  for (auto& o : OPCOES_BOOL) {
+    if (nome != o.nome) continue;
+    String v = valor; v.toLowerCase();
+    bool novo;
+    if (v == "true" || v == "1" || v == "on")        novo = true;
+    else if (v == "false" || v == "0" || v == "off") novo = false;
+    else { Serial.printf("%s = %s  (use true/false)\n", o.nome, *o.valor ? "true" : "false"); return true; }
+    *o.valor = novo;
+    prefs.begin("s16cfg", false); prefs.putBool(o.nome, novo); prefs.end();
+    Serial.printf("%s = %s (salvo)\n", o.nome, novo ? "true" : "false");
+    return true;
+  }
+  for (auto& o : OPCOES_TEXTO) {
+    if (nome != o.nome) continue;
+    if (valor == "\"\"" || valor == "-") valor = "";      // "" ou - = vazio
+    valor.replace("\"", "");
+    *o.valor = valor;
+    prefs.begin("s16cfg", false); prefs.putString(o.nome, valor); prefs.end();
+    Serial.printf("%s = \"%s\" (salvo; vale na proxima busca pela roda)\n", o.nome, valor.c_str());
+    return true;
+  }
+  return false;
+}
+
 // ---------- Console de experimentos (digite no Serial Monitor, "Nova linha" ligado) ----------
 //   t 95 6 FF                 -> comando 95 com o byte 6 = FF (resto zero, final 14 5A 5A)
 //   raw AA 55 00 ... 5A 5A    -> envia exatamente esses 20 bytes (ex.: um frame capturado)
-//   esquecer                  -> apaga os pareamentos (controle de midia) guardados no display
 // As respostas "diferentes" da roda aparecem como R? (ver DUMP_NOVOS).
 static void handleSerialConsole() {
   static char line[160];
@@ -866,6 +824,7 @@ static void handleSerialConsole() {
     if (c == '\r') continue;
     if (c != '\n') { if (n < (int)sizeof(line) - 1) line[n++] = c; continue; }
     line[n] = 0; n = 0;
+    if (comandoConfig(String(line))) continue;   // "DUMP_OTHER = false", "config"...
 
     char* save;
     char* tok = strtok_r(line, " ", &save);
@@ -874,11 +833,6 @@ static void handleSerialConsole() {
     uint8_t v[24]; int cnt = 0;
     while ((tok = strtok_r(nullptr, " ", &save)) && cnt < 24) v[cnt++] = strtoul(tok, nullptr, 16);
 
-    if (nome == "esquecer") {          // apaga os pareamentos guardados no display
-      NimBLEDevice::deleteAllBonds();
-      Serial.println("Pareamentos apagados (esqueca o display no Bluetooth do celular tambem)");
-      continue;
-    }
     if (!mainRemote) { Serial.println("Roda nao conectada"); continue; }
     uint8_t p[20] = {0xAA, 0x55};
     if (nome == "t" && cnt == 3 && v[1] >= 2 && v[1] <= 15) {
@@ -888,6 +842,7 @@ static void handleSerialConsole() {
       memcpy(p, v, 20);
     } else {
       Serial.println("Uso:  t <cmd> <posicao 2-15> <valor>   (hex)   ex.: t 95 6 FF");
+      Serial.println("      config | config padrao | DUMP_OTHER = false | NAME_FILTER = KS ...");
       Serial.println("      raw <20 bytes hex>");
       continue;
     }
@@ -1006,22 +961,11 @@ static void drawTopBar() {
   spr.setTextDatum(middle_left);
   spr.setTextColor(wheelOk ? TFT_GREEN : TFT_RED);
   spr.drawString("RODA", 4, 11);
-  // APP n: quantos apps estao recebendo os dados da roda (assinaram a FFE1)
-  int apps = appConns;
-  char ap[8];
-  if (apps > 0) snprintf(ap, sizeof(ap), "APP %d", apps); else strcpy(ap, "APP");
-  spr.setTextColor(apps > 0 ? TFT_CYAN : COL_FRAME);
-  spr.drawString(ap, 44, 11);
-  // nota musical: controle de midia (HID) ativo no celular
-  if (MIDIA_HID) {
-    bool hidOk = hidAtivo && hidConnHandle != BLE_HS_CONN_HANDLE_NONE;
-    uint16_t cn = hidOk ? TFT_MAGENTA : COL_FRAME;
-    spr.fillCircle(92, 15, 3, cn);
-    spr.drawFastVLine(95, 4, 12, cn);
-    spr.drawLine(95, 4, 99, 7, cn);
-  }
-  if (millis() < hornFlashUntil) spr.fillCircle(110, 11, 5, TFT_YELLOW);   // buzina
-  if (wd.cooling > 0) { spr.setTextColor(TFT_ORANGE); spr.drawString("FAN", 118, 11); }
+  // APP: algum app conectado
+  spr.setTextColor(appConns > 0 ? TFT_CYAN : COL_FRAME);
+  spr.drawString("APP", 44, 11);
+  if (millis() < hornFlashUntil) spr.fillCircle(86, 11, 5, TFT_YELLOW);    // buzina
+  if (wd.cooling > 0) { spr.setTextColor(TFT_ORANGE); spr.drawString("FAN", 96, 11); }
   // bolinhas indicando a tela atual
   for (int i = 0; i < NUM_PAGES; i++) {
     int x = 148 + i * 12;
@@ -1174,18 +1118,17 @@ static void drawBms() {
 
 // ---------- Tela de controles (icones desenhados com formas simples) ----------
 // Grade de 4 linhas x 3 colunas. Cada botao tem um tipo de icone e uma acao.
-enum Icone { IC_CEL_MENOS, IC_CEL_MAIS, IC_VAZIO,
-             IC_PREV, IC_PLAY, IC_NEXT,
+enum Icone { IC_VAZIO, IC_PREV, IC_NEXT,
              IC_VOL_MENOS, IC_VOL_MAIS, IC_LOG,
              IC_FAROL, IC_LEDS, IC_BUZINA };
-// Layout (4 linhas x 3 colunas):
-//   [cel -] [cel +] [     ]      <- CELULAR: volume (teclas de midia HID)
-//   [ |<< ] [ >|| ] [ >>| ]      <-          musica (HID)
-//   [roda-] [roda+] [ log ]      <- RODA: volume dos falantes (comando 95) e gravacao
-//   [farol] [ LEDs] [buzina]     <-       farol e LEDs alternam a cada toque
+// Layout (4 linhas x 3 colunas) - tudo vai para a RODA (sem controle de midia nesta versao):
+//   [     ] [     ] [     ]
+//   [ |<< ] [     ] [ >>| ]      <- musica tocando NA RODA (comando 95)
+//   [roda-] [roda+] [ log ]      <- volume dos falantes da roda e gravacao
+//   [farol] [ LEDs] [buzina]     <- farol e LEDs alternam a cada toque
 static const Icone layout[12] = {
-  IC_CEL_MENOS, IC_CEL_MAIS, IC_VAZIO,
-  IC_PREV, IC_PLAY, IC_NEXT,
+  IC_VAZIO, IC_VAZIO, IC_VAZIO,
+  IC_PREV, IC_VAZIO, IC_NEXT,
   IC_VOL_MENOS, IC_VOL_MAIS, IC_LOG,
   IC_FAROL, IC_LEDS, IC_BUZINA,
 };
@@ -1220,11 +1163,6 @@ static void icAltoFalante(int cx, int cy, uint16_t c) {
   spr.fillRect(cx - 16, cy - 5, 7, 10, c);
   spr.fillTriangle(cx - 9, cy, cx - 1, cy - 11, cx - 1, cy + 11, c);
 }
-static void icCelular(int cx, int cy, uint16_t c) {        // celular a esquerda do centro
-  spr.drawRoundRect(cx - 18, cy - 14, 15, 28, 3, c);
-  spr.drawFastHLine(cx - 14, cy - 10, 7, c);              // "alto-falante" do celular
-  spr.fillCircle(cx - 10, cy + 9, 1, c);                  // "botao"
-}
 static void icMenos(int cx, int cy, uint16_t c) { spr.fillRect(cx + 4, cy - 2, 12, 4, c); }
 static void icMais(int cx, int cy, uint16_t c)  { icMenos(cx, cy, c); spr.fillRect(cx + 8, cy - 6, 4, 12, c); }
 static void icArquivo(int cx, int cy, uint16_t c) {
@@ -1246,15 +1184,11 @@ static void icInterrogacao(int cx, int cy, uint16_t c) {
 static void drawIcone(int icInt, int cx, int cy, uint16_t c) {
   Icone ic = (Icone)icInt;
   switch (ic) {
-    case IC_CEL_MENOS:  icCelular(cx, cy, c); icMenos(cx, cy, c); break;
-    case IC_CEL_MAIS:   icCelular(cx, cy, c); icMais(cx, cy, c); break;
     case IC_LOG:        icArquivo(cx, cy, rideLogging ? TFT_RED : (sdOk ? c : COL_FRAME)); break;
     case IC_PREV:       spr.fillRect(cx - 16, cy - 9, 3, 18, c);
                         icTriangulo(cx - 1, cy, -1, c); icTriangulo(cx + 12, cy, -1, c); break;
     case IC_NEXT:       spr.fillRect(cx + 13, cy - 9, 3, 18, c);
                         icTriangulo(cx + 1, cy, +1, c); icTriangulo(cx - 12, cy, +1, c); break;
-    case IC_PLAY:       icTriangulo(cx - 14, cy, +1, c);
-                        spr.fillRect(cx + 4, cy - 9, 4, 18, c); spr.fillRect(cx + 11, cy - 9, 4, 18, c); break;
     case IC_VOL_MENOS:  icAltoFalante(cx, cy, c); icMenos(cx, cy, c); break;
     case IC_VOL_MAIS:   icAltoFalante(cx, cy, c); icMais(cx, cy, c); break;
     case IC_FAROL:
@@ -1298,10 +1232,6 @@ static void drawControls() {
   spr.pushSprite(0, 0);
 }
 
-static void hidOuAviso(uint8_t tecla) {
-  if (MIDIA_HID) hidTecla(tecla);
-  else Serial.println("Controle de midia desligado (MIDIA_HID = false)");
-}
 
 static void tocarControles(int x, int y) {
   for (int i = 0; i < 12; i++) {
@@ -1313,11 +1243,8 @@ static void tocarControles(int x, int y) {
     botaoAcesoAte = millis() + 250;
 
     switch (ic) {
-      case IC_CEL_MENOS: logEvent("toque: volume celular -"); hidOuAviso(HID_VOL_MENOS); break;
-      case IC_CEL_MAIS:  logEvent("toque: volume celular +"); hidOuAviso(HID_VOL_MAIS); break;
-      case IC_PREV:      logEvent("toque: musica anterior");  hidOuAviso(HID_ANTERIOR); break;
-      case IC_PLAY:      logEvent("toque: play/pause");       hidOuAviso(HID_PLAY); break;
-      case IC_NEXT:      logEvent("toque: musica proxima");   hidOuAviso(HID_PROXIMA); break;
+      case IC_PREV:      logEvent("toque: musica anterior (roda)"); sendKs(0x95, 0, 0, 0, 0xFF); break;
+      case IC_NEXT:      logEvent("toque: musica proxima (roda)");  sendKs(0x95, 0, 0, 0xFF, 0); break;
       case IC_VOL_MENOS: logEvent("toque: volume roda -");    sendKs(0x95, 0, 0xFF, 0, 0); break;
       case IC_VOL_MAIS:  logEvent("toque: volume roda +");    sendKs(0x95, 0xFF, 0, 0, 0); break;
       case IC_LOG:
@@ -1395,6 +1322,7 @@ static void handleHornButton() {
 // ================= Setup / Loop =================
 void setup() {
   Serial.begin(115200);
+  carregarConfig();
   tft.init();
   tft.setRotation(0);          // retrato, 240x320 (USB-C embaixo; mude para 2 para inverter)
   tft.setBrightness(200);
@@ -1421,26 +1349,6 @@ void setup() {
 
   NimBLEDevice::init("");
   NimBLEDevice::setMTU(247);
-  {
-    // Endereco do "S16 Controle": o MAC Bluetooth do chip, com os 2 bits mais altos ligados
-    // (e o que caracteriza um endereco "random static"). Fixo: o celular reconhece sempre.
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_BT);
-    for (int k = 0; k < 6; k++) hidAddrVal[k] = mac[5 - k];   // ordem invertida (little-endian)
-    hidAddrVal[0] ^= 0x01;                                    // diferente do endereco da roda
-    hidAddrVal[5] |= 0xC0;
-  }
-  if (MIDIA_HID) {
-    // Pareamento "so confirmar" (sem PIN), com bonding (o celular lembra do display)
-    NimBLEDevice::setSecurityAuth(true, false, true);
-    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
-    // NAO entregar a "identidade" (IRK + endereco publico) ao parear. Se entregasse, o
-    // Android ligaria o pareamento ao endereco PUBLICO do ESP32 - que e o da identidade
-    // da roda - e voltaria a tratar as duas identidades como o mesmo aparelho.
-    NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC);
-    NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC);
-  }
-
   server = NimBLEDevice::createServer();
   server->setCallbacks(&serverCB, false);
   // (advertiseOnDisconnect nao existe com o anuncio estendido: quem decide e o updateAdvertising)
@@ -1478,19 +1386,7 @@ void loop() {
   writeEvents();
   writeRideLine();
   handleSerialConsole();
-  if (MIDIA_HID) hidSoltar();
   updateAdvertising();
-
-  // Diagnostico: quanto sobrou, no pior momento, da pilha da tarefa do Bluetooth.
-  // Os callbacks (repasse, logs, Serial) rodam nela. Se chegar perto de 0, ela "transborda"
-  // e corrompe a memoria vizinha - suspeita dos reinicios dentro da NimBLE.
-  static uint32_t lastStack = 0;
-  if (millis() - lastStack > 10000) {
-    lastStack = millis();
-    TaskHandle_t h = xTaskGetHandle("nimble_host");
-    if (h) Serial.printf("[pilha] nimble_host: %u bytes livres (minimo ate agora)\n",
-                         (unsigned)uxTaskGetStackHighWaterMark(h));
-  }
 
   bool wheelOk = client && client->isConnected();
   if (wheelOk) {
