@@ -44,7 +44,8 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 ### Funcionando ✅
 
 - Ponte BLE estável: o display conecta na roda e se apresenta aos celulares com o mesmo nome e os mesmos serviços (clone completo da GATT).
-- **EUC World, Mono Riders e app da KingSong** funcionando pela ponte, com **2 apps ao mesmo tempo**.
+- **EUC World, Mono Riders, WheelLog e app da KingSong** funcionando pela ponte, com **2 apps garantidos** (já rodaram os 4 juntos na v5 2APPS, com o Android dividindo conexões).
+- **WheelLog só funciona na v5 2APPS:** ele exige a lista de serviços idêntica à da roda, e a v5 MIDIA tem 2 serviços a mais (HID `1812` e bateria `180F`).
 - **Controle de mídia** (v5 MIDIA): música e volume do celular direto pelo display, numa identidade Bluetooth separada ("S16 Controle").
 - 3 telas por deslize: **BMS** ← **principal** → **controles**.
 - Buzina no botão BOOT e na tela; farol (liga/desliga/auto), LEDs, volume da roda.
@@ -148,7 +149,7 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 | Pasta / arquivo | O que é |
 |---|---|
 | `ks_s16_ponte_v5_midia/` | **Versão principal**: ponte + 2 apps + controle de mídia (2 identidades BLE) |
-| `ks_s16_ponte_v5_2apps/` | Mesma ponte, sem controle de mídia (mais simples, fallback estável) |
+| `ks_s16_ponte_v5_2apps/` | Mesma ponte, sem controle de mídia (mais simples, fallback estável; **a única que funciona com o WheelLog**) |
 | `patch_nimble_2.5.1/` | Os 5 arquivos corrigidos da NimBLE e onde vai cada um |
 | `ks_s16_ponte_v3.ino` | Versão antiga para o ESP32-C3 com LCD 16×2 |
 | `galeria_fotos/` | Exemplo de aprendizado: tela + touch + sprites + zoom (+ script `converter_fotos.py`) |
@@ -238,8 +239,8 @@ A roda: `KS-S16P-0254`, série `KSSE61O231020J158`, anuncia como `KSN-S16P--4C4B
 
 | Tipo | Conteúdo |
 |---|---|
-| `A9` | 2–3 tensão (/100 V) · 4–5 velocidade (/100 km/h) · 10–11 corrente (signed, /100 A; **negativa = regeneração/freio**) · 12–13 temperatura (/100 °C) |
-| `B9` | 2–5 trip (u32 "invertido", /1000 km) · 6–7 tempo (s) · 8–9 máxima (/100 km/h) · 12 ventoinha ("Cooling") · 14–15 temperatura 2 (motor?) |
+| `A9` | 2–3 tensão (/100 V) · 4–5 velocidade (/100 km/h) · 10–11 corrente (signed, /100 A; **negativa = regeneração/freio**) · 12–13 temperatura da **placa-mãe** (/100 °C) |
+| `B9` | 2–5 trip (u32 "invertido", /1000 km) · 6–7 tempo (s) · 8–9 máxima (/100 km/h) · 12 ventoinha ("Cooling") · 14–15 temperatura do **motor** (confirmado com o app) |
 | `F5` | 14 carga de CPU? · **15 PWM (%)** |
 | `F6` | 2–3 limite de velocidade (/100; começa 20, vira 32) · 14 flags de alarme? (`DA` com PWM alto) |
 | `F1`/`F2` subtipo `D0` | BMS pack 1/2 (frame longo): [21] nº células, depois tensões (mV), nº de sensores, temperaturas (0,1 K), corrente, tensão, SoC (/10 %) |
@@ -282,6 +283,8 @@ A roda: `KS-S16P-0254`, série `KSSE61O231020J158`, anuncia como `KSN-S16P--4C4B
 - "Weak magnetic acceleration" no app = **field weakening**: +velocidade, −torque, mais calor. Com ele ligado, o PWM deixa de ser uma medida fiel da margem de segurança.
 - Regeneração com bateria cheia em descida longa pode levar a tensão acima do limite.
 - O app da KingSong acerta o relógio da roda e das BMS na hora local.
+- Cada pack tem 6 temperaturas (4 de células, MOS e ambiente). O app mostra a **média** delas como "temperatura do pack"; o display hoje mostra a **máxima**.
+- "Ridinglogging" do app: a roda guarda um **resumo por sessão** (liga → desliga): velocidade máxima/média, potência, energia, tensão mín./máx., corrente máx., temperaturas, distância e tempo. Os horários das sessões estão certos, mas o app **agrupa por dia com +11 h** (fuso da China), e os gráficos são **um ponto só** por sessão, desenhado no horário de fim e "suavizado" em curva. A sessão atual só aparece depois de desligar a roda.
 
 ---
 
@@ -374,6 +377,8 @@ Registradas para não se perderem — **não** são compromisso.
 - Log cru de todos os frames no SD, para engenharia reversa em movimento.
 - Descobrir o CRC do formato estendido (temos vários `F9` com CRC para testar).
 - Explorar configurações da roda (tiltback, alarmes) e as cores dos LEDs (`59`).
+- Baixar os resumos de sessão da roda ("Ridinglogging") pela ponte e gravar no SD com as datas certas.
+- **WheelLog na v5 MIDIA:** ver no código do WheelLog (aberto) exatamente como ele compara os serviços (quantidade? lista exata? só os da marca?) e tentar contornar, para ter controle de mídia e WheelLog na mesma versão.
 
 **Hardware**
 - GPS (módulo de drone M10, ex. HGLRC M100 Mini) na UART — também dá hora exata.
