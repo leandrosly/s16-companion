@@ -335,12 +335,15 @@ void desenharValores() {
 bool estavaTocando = false;
 bool toqueSoParaAcender = false;   // o toque que acendeu a tela nao aperta botao
 
-void tratarTouch() {
+// Recebe o "agora" do loop em vez de chamar millis() de novo. Se usasse
+// millis() aqui, ultimoToque poderia ficar 1 ms DEPOIS do "agora" do loop,
+// e a conta "agora - ultimoToque" (sem sinal) daria -1 = 4294967295 ms!
+void tratarTouch(uint32_t agora) {
   int32_t x, y;
   bool tocando = tela.getTouch(&x, &y);
   if (tocando && !estavaTocando) {             // inicio de um toque
-    ultimoToque = millis();
-    ultimoMovimento = millis();                // tocar tambem conta como "em uso"
+    ultimoToque = agora;
+    ultimoMovimento = agora;                   // tocar tambem conta como "em uso"
     if (estado == APAGADA) {
       acender("toque");
       toqueSoParaAcender = true;
@@ -395,7 +398,7 @@ void loop() {
   }
 
   // 2) touch
-  tratarTouch();
+  tratarTouch(agora);
 
   // 3) decide acender/apagar
   if (autoLigado && temRef && mpuOk) {
