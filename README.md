@@ -34,7 +34,7 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 | # | Frente | Próximo passo concreto |
 |---|---|---|
 | 1 | **Mochila iFlight (módulo Dream)** | Testar `9E` pelo nRF Connect, descobrir quantos efeitos existem e capturar a resposta ao `EF 01 77`. Depois: tela da mochila no display. |
-| 2 | **MPU-6050** | Ligar (pinagem na seção 3) e rodar um sketch de teste mostrando os ângulos na tela. |
+| 2 | **MPU-6050** | ✅ I2C testado (Plano A, `teste_i2c_mpu`). Agora: `teste_tela_mpu` — acender/apagar a tela pela posição do pulso e dormir parado. |
 | 3 | **Piscas de 433 MHz** | Rodar `captura_433` no C3 com o receptor e anotar os códigos de cada botão. |
 
 ---
@@ -87,11 +87,12 @@ ESP32-S3 (16 MB flash, 8 MB PSRAM OPI), tela IPS 2,8" 240×320 (ILI9341V, SPI), 
 
 | Conector | Pinos | Plano de uso |
 |---|---|---|
-| I2C | 3.3V, GND, IO15 (SCL), IO16 (SDA) | só a **alimentação** do MPU-6050 e do MCP23017 (o barramento é do touch) |
-| GPIO | IO21, IO14, IO3, IO2 | IO21 = SDA e IO14 = SCL (I2C separado do MPU); IO2 = INT do MPU; IO3 = botão externo |
+| I2C | 3.3V, GND, IO15 (SCL), IO16 (SDA) | **MPU-6050 (0x68)** no mesmo barramento do touch (0x38) e do codec ES8311 (0x18), usando as funções `lgfx::i2c` da LovyanGFX (testado: 0 erros com o touch em uso) |
+| GPIO | IO21, IO14, IO3, IO2 | IO14 = INT do MPU (acordar do deep sleep); IO2 = pisca esquerda; IO3 = pisca direita (botões ao GND); IO21 = STX882 (433 MHz) |
 | UART | 5V, GND, TXD (IO44), RXD (IO43) | livre: 5 V para receptor 433 MHz, ou UART para GPS |
 | BAT | + / − | LiPo 3,7 V (**conferir a polaridade antes de ligar!**) |
-| SPEAKER | 2 pinos | alto-falante 4–8 Ω |
+| SPEAKER | 2 pinos | piezo passivo + 100 Ω em série (saída em ponte: nenhum dos pinos é GND) |
+| BOOT (IO0) | soldar nos pads do botão | botão da buzina em paralelo (não segurar ao ligar a placa) |
 
 Não há outros pinos livres no chip. Para mais portas: **MCP23017** (16 GPIO por I2C).
 
@@ -154,6 +155,8 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 | `ks_s16_ponte_v3.ino` | Versão antiga para o ESP32-C3 com LCD 16×2 |
 | `galeria_fotos/` | Exemplo de aprendizado: tela + touch + sprites + zoom (+ script `converter_fotos.py`) |
 | `captura_433/` | Sketch para descobrir os códigos do controle dos piscas (ESP32-C3) |
+| `teste_i2c_mpu/` | Teste do MPU-6050 dividindo o I2C com o touch (Plano A LovyanGFX / Plano B Wire1) |
+| `teste_tela_mpu/` | Teste: acender/apagar a tela pela posição do pulso + deep sleep parado (acorda pelo BOOT ou INT do MPU) |
 
 ---
 
@@ -331,6 +334,9 @@ Handshake do app ao conectar: `EF 01 77` (pede o estado), `C5 F0 5C`, `CF 01 02 
 - Touch girado 180° em relação à imagem.
 - Sem `USB CDC On Boot` o Serial fica mudo.
 - Sem PSRAM, os sprites não cabem.
+
+- **I2C com um dono só**: a LovyanGFX controla a porta I2C 0 (touch) direto nos registradores. Outros chips no mesmo barramento (MPU, ES8311, RTC) usam `lgfx::i2c::readRegister`/`writeRegister8` — **não** a `Wire`. Se um dia precisar da `Wire`, tem que ser a `Wire1` (porta 1) em outros pinos. E todo acesso I2C fica na mesma tarefa (`loop()`).
+- **Endereços I2C** são de 7 bits e fixos de fábrica. DS3231 (RTC) também é 0x68: se entrar, o MPU vai para 0x69 (AD0 no 3.3V). Datasheet com 0xD0/0xD1 = o mesmo 0x68 com o bit de leitura/escrita junto.
 
 ---
 
