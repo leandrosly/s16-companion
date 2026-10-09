@@ -444,6 +444,16 @@ const int BTN_Y = 266, BTN_H = 50, BTN_W = 116, BTN_X2 = 124;
 const int CB_Y = 22, CB_H = 38, CB_W = 76, CB_X2 = 82, CB_X3 = 164;
 uint32_t confirmaPadrao = 0;   // hora do 1o toque em PADRAO (0 = nao esta pedindo confirmacao)
 
+// So os 3 botoes de cima. Usado quando um deles muda, para nao redesenhar
+// a tela inteira (o fillScreen preto antes de tudo e o que dava a "piscada").
+void desenharBotoesConfig() {
+  botao(0, CB_Y, CB_W, CB_H, "GRAVAR", temRef ? TFT_NAVY : TFT_ORANGE);
+  botao(CB_X2, CB_Y, CB_W, CB_H, autoLigado ? "AUTO sim" : "AUTO nao",
+        autoLigado ? TFT_DARKGREEN : TFT_MAROON);
+  if (confirmaPadrao) botao(CB_X3, CB_Y, CB_W, CB_H, "certeza?", TFT_RED);
+  else botao(CB_X3, CB_Y, CB_W, CB_H, "PADRAO", TFT_DARKGREY);
+}
+
 void desenharPagina() {
   tela.fillScreen(TFT_BLACK);
   tela.setTextColor(TFT_CYAN, TFT_BLACK);
@@ -455,11 +465,7 @@ void desenharPagina() {
     botao(0, BTN_Y, BTN_W, BTN_H, "CONFIG", TFT_NAVY);
   } else {
     tela.drawString("Configuracao", 4, 2, &fonts::Font2);
-    botao(0, CB_Y, CB_W, CB_H, "GRAVAR", temRef ? TFT_NAVY : TFT_ORANGE);
-    botao(CB_X2, CB_Y, CB_W, CB_H, autoLigado ? "AUTO sim" : "AUTO nao",
-          autoLigado ? TFT_DARKGREEN : TFT_MAROON);
-    if (confirmaPadrao) botao(CB_X3, CB_Y, CB_W, CB_H, "certeza?", TFT_RED);
-    else botao(CB_X3, CB_Y, CB_W, CB_H, "PADRAO", TFT_DARKGREY);
+    desenharBotoesConfig();
     for (int i = 0; i < N_BARRAS; i++) desenharBarra(i);
     botao(0, BTN_Y, BTN_W, BTN_H, "VOLTAR", TFT_NAVY);
   }
@@ -536,7 +542,7 @@ void ajustarBarra(int i, int x) {
   desenharBarra(i);
 }
 
-void toqueComecou(int x, int y) {
+void toqueComecou(int x, int y, uint32_t agora) {
   if (y >= BTN_Y) {                                   // faixa de baixo
     if (x >= BTN_X2) { dormir("botao DORMIR"); return; }
     pagina = (pagina == MONITOR) ? CONFIG : MONITOR;
@@ -547,9 +553,12 @@ void toqueComecou(int x, int y) {
   if (y >= CB_Y && y < CB_Y + CB_H) {                 // GRAVAR / AUTO / PADRAO
     if (x < CB_X2) gravarRef();
     else if (x < CB_X3) { autoLigado = !autoLigado; salvarConfig(); }
-    else if (!confirmaPadrao) confirmaPadrao = millis();   // 1o toque: pede confirmacao
-    else { voltarPadrao(); confirmaPadrao = 0; }           // 2o toque: confirma
-    desenharPagina();
+    else if (!confirmaPadrao) confirmaPadrao = agora;      // 1o toque: pede confirmacao
+    else {                                                 // 2o toque: confirma
+      voltarPadrao(); confirmaPadrao = 0;
+      for (int i = 0; i < N_BARRAS; i++) desenharBarra(i);
+    }
+    desenharBotoesConfig();
     return;
   }
   for (int i = 0; i < N_BARRAS; i++) {
@@ -564,7 +573,7 @@ void tratarTouch(uint32_t agora) {
   if (tocando && !estavaTocando) {
     ultimoToque = agora;
     if (estado == APAGADA) { acender("toque"); toqueSoParaAcender = true; }
-    else if (!avisoDormir) toqueComecou(x, y);    // na tela de aviso, o toque so cancela
+    else if (!avisoDormir) toqueComecou(x, y, agora);    // na tela de aviso, o toque so cancela
   } else if (tocando && arrastando >= 0) {
     ajustarBarra(arrastando, x);
   }
@@ -666,7 +675,7 @@ void loop() {
   }
 
   // pedido de confirmacao do PADRAO expira em 3 s
-  if (confirmaPadrao && agora - confirmaPadrao > 3000) { confirmaPadrao = 0; if (pagina == CONFIG) desenharPagina(); }
+  if (confirmaPadrao && agora - confirmaPadrao > 3000) { confirmaPadrao = 0; if (pagina == CONFIG) desenharBotoesConfig(); }
 
   // 5) tela 5x por segundo (so acesa; nunca no meio de um arrasto)
   if (estado == LIGADA && arrastando < 0 && agora - tTela >= 200) {
