@@ -16,11 +16,12 @@
 
   DUAS TELAS
     MONITOR - valores ao vivo + botoes CONFIG e DORMIR
-    CONFIG  - GRAVAR posicao, AUTO sim/nao e quatro barrinhas:
+    CONFIG  - GRAVAR posicao, AUTO sim/nao, PADRAO (toque 2x: volta os
+              valores de fabrica, mantem a posicao gravada) e quatro barrinhas:
                 acende abaixo de (graus)   - com marcador do angulo atual
                 apaga acima de (graus)     - idem
                 sensibilidade do "parado"  - com barra de movimento ao vivo
-                dormir apos (segundos)
+                dormir apos (segundos; no fim da barra = "nunca")
               Tudo e salvo na memoria (Preferences) ao soltar o dedo.
               Enquanto a tela CONFIG esta aberta ela NAO apaga sozinha
               (mostra "apagaria" em vez disso), para voce poder testar
@@ -37,7 +38,11 @@
     O giro e a aceleracao passam por uma media (~1/3 s). Assim um toque
     na mesa, digitar ou tossir (pancadas de milissegundos) quase nao
     mexem na media; mexer o braco de verdade mexe. A sensibilidade (1-10)
-    escolhe o limite. Tambem ajusta o quanto de movimento acorda a placa.
+    escolhe o limite. Tambem ajusta o quanto de movimento acorda a placa
+    (so com o fio INT ligado). O giro tem o "zero" corrigido sozinho e a
+    aceleracao e comparada com a gravidade lenta, para que o erro de
+    fabrica do sensor nao pareca movimento.
+    Antes de dormir: 5 s de aviso com uma barra; tocar ou mexer cancela.
 
   LIGACAO EXTRA (opcional, para acordar mexendo o braco)
     INT do MPU -> IO14 (conector GPIO). Sem esse fio, acorda so pelo BOOT.
@@ -66,15 +71,20 @@ const gpio_num_t PINO_LUZ     = GPIO_NUM_45;
 // ---------------------------------------------------------------------
 // CONFIGURACAO AJUSTAVEL (valores iniciais; depois vem da memoria)
 // ---------------------------------------------------------------------
-float angLiga  = 30;     // graus
-float angApaga = 50;     // graus
-float sensib   = 4;      // 1 = so movimento forte ... 10 = qualquer coisinha
-float dormirS  = 60;     // segundos parado para dormir
+// Valores de fabrica (o botao PADRAO volta para eles)
+const float PADRAO_LIGA = 30, PADRAO_APAGA = 50, PADRAO_SENS = 5, PADRAO_DORMIR = 60;
+const float DORMIR_NUNCA = 615;   // ultima posicao da barrinha = nunca dorme
+const uint32_t T_AVISO = 5000;    // ms de aviso antes de dormir
+
+float angLiga  = PADRAO_LIGA;     // graus
+float angApaga = PADRAO_APAGA;    // graus
+float sensib   = PADRAO_SENS;     // 1 = so movimento forte ... 10 = qualquer coisinha
+float dormirS  = PADRAO_DORMIR;   // segundos parado para dormir (DORMIR_NUNCA = desligado)
 bool  autoLigado = true;
 
 // Limites derivados da sensibilidade (recalculados por aplicarSensib)
 float   limGiro = 17;    // graus/s (media)
-float   limAcel = 0.12f; // g (media do |acel - 1 g|)
+float   limAcel = 0.12f; // g (media da diferenca entre a aceleracao e a gravidade lenta)
 uint8_t motThr  = 30;    // limite do detector de movimento do MPU (para acordar)
 
 // Interpolacao "geometrica": cada passo multiplica pelo mesmo fator.
@@ -83,8 +93,8 @@ float entre(float a, float b, float t) { return a * powf(b / a, t); }
 
 void aplicarSensib() {
   float t = (sensib - 1) / 9.0f;            // 0..1
-  limGiro = entre(40.0f, 3.0f, t);          // nivel 1: 40 graus/s ... nivel 10: 3
-  limAcel = entre(0.30f, 0.02f, t);         // nivel 1: 0,30 g ... nivel 10: 0,02 g
+  limGiro = entre(40.0f, 1.5f, t);          // nivel 1: 40 graus/s ... nivel 10: 1,5
+  limAcel = entre(0.30f, 0.012f, t);        // nivel 1: 0,30 g ... nivel 10: 0,012 g
   motThr  = (uint8_t)roundf(entre(60.0f, 5.0f, t));
 }
 
@@ -155,6 +165,8 @@ bool  mpuOk = false;
 float ax, ay, az, gx, gy, gz;
 float fx = 0, fy = 0, fz = 1;     // gravidade filtrada
 float movGiro = 0, movAcel = 0;   // medias do movimento
+float zgx = 0, zgy = 0, zgz = 0;  // "zero" do giro: o que ele marca parado (cada chip tem o seu)
+float sx = 0, sy = 0, sz = 1;     // gravidade LENTA (media de ~1 s)
 
 bool mpuIniciar() {
   if (!i2cEscrever(END_MPU, 0x6B, 0x80)) return false;   // reset
@@ -175,10 +187,23 @@ bool mpuLer() {
   ax = v(0) / LSB_ACEL; ay = v(2) / LSB_ACEL; az = v(4) / LSB_ACEL;
   gx = v(8) / LSB_GIRO; gy = v(10) / LSB_GIRO; gz = v(12) / LSB_GIRO;
   fx += 0.1f * (ax - fx); fy += 0.1f * (ay - fy); fz += 0.1f * (az - fz);
+  // ZERO DO GIRO: parado, o giro deveria marcar 0, mas cada chip marca
+  // alguns graus/s (o "bias"). Era isso que deixava o nivel 7+ sempre verde.
+  // Enquanto o giro e pequeno (< 8 graus/s em cada eixo), o zero vai sendo
+  // ajustado devagar (~5 s). Movimento de verdade passa de 8 e nao entra.
+  gx -= zgx; gy -= zgy; gz -= zgz;
+  if (fabsf(gx) < 8 && fabsf(gy) < 8 && fabsf(gz) < 8) {
+    zgx += 0.002f * gx; zgy += 0.002f * gy; zgz += 0.002f * gz;
+  }
+  // ACELERACAO: antes era |acel| - 1 g, mas o acelerometro tambem tem erro
+  // de fabrica (parado marca 0,97 ou 1,03 g). Agora compara a aceleracao com
+  // a gravidade "lenta": o erro fixo aparece nas duas e se cancela.
+  sx += 0.01f * (ax - sx); sy += 0.01f * (ay - sy); sz += 0.01f * (az - sz);
+  float dx = ax - sx, dy = ay - sy, dz = az - sz;
+  float dAcel = sqrtf(dx * dx + dy * dy + dz * dz);
+  float giro = sqrtf(gx * gx + gy * gy + gz * gz);
   // Medias do movimento: a 100 leituras/s, peso 3% = "memoria" de ~1/3 s.
   // Uma pancada de 20 ms quase nao aparece; 1 s mexendo o braco aparece inteiro.
-  float giro = sqrtf(gx * gx + gy * gy + gz * gz);
-  float dAcel = fabsf(sqrtf(ax * ax + ay * ay + az * az) - 1.0f);
   movGiro += 0.03f * (giro - movGiro);
   movAcel += 0.03f * (dAcel - movAcel);
   return true;
@@ -228,6 +253,16 @@ void salvarConfig() {
   prefs.end();
   Serial.printf("[cfg] acende <%.0f  apaga >%.0f  sensib %.0f (giro %.1f, acel %.3f, mot %u)  dormir %.0fs  auto %s\n",
                 angLiga, angApaga, sensib, limGiro, limAcel, motThr, dormirS, autoLigado ? "sim" : "nao");
+}
+
+// Volta as barrinhas e o AUTO para os valores de fabrica.
+// A posicao gravada fica (ela depende de como o MPU esta montado).
+void voltarPadrao() {
+  angLiga = PADRAO_LIGA; angApaga = PADRAO_APAGA; sensib = PADRAO_SENS; dormirS = PADRAO_DORMIR;
+  autoLigado = true;
+  aplicarSensib();
+  salvarConfig();
+  Serial.println("[cfg] valores de fabrica");
 }
 
 void gravarRef() {
@@ -355,7 +390,7 @@ Barra barras[N_BARRAS] = {
   { "Acende abaixo de",   62, 5,  80, 1,  &angLiga,  "graus" },
   { "Apaga acima de",    106, 10, 90, 1,  &angApaga, "graus" },
   { "Sensibilidade",     150, 1,  10, 1,  &sensib,   ""      },
-  { "Dormir apos",       204, 15, 600, 15, &dormirS, "s"     },
+  { "Dormir apos",       204, 15, DORMIR_NUNCA, 15, &dormirS, "s" },
 };
 
 int posicaoNoTrilho(int i, float v) {
@@ -369,7 +404,8 @@ void desenharBarra(int i) {
   faixa.setTextColor(TFT_WHITE);
   faixa.drawString(b.nome, 4, 0, &fonts::Font2);
   char txt[16];
-  snprintf(txt, sizeof(txt), "%.0f %s", *b.valor, b.unidade);
+  if (i == B_DORMIR && *b.valor >= DORMIR_NUNCA) snprintf(txt, sizeof(txt), "nunca");
+  else snprintf(txt, sizeof(txt), "%.0f %s", *b.valor, b.unidade);
   faixa.setTextColor(TFT_CYAN);
   faixa.drawRightString(txt, 236, 0, &fonts::Font2);
 
@@ -405,7 +441,8 @@ void desenharMedidorMovimento() {
 // Botoes de baixo (as duas paginas usam a mesma faixa)
 const int BTN_Y = 266, BTN_H = 50, BTN_W = 116, BTN_X2 = 124;
 // Botoes de cima da pagina CONFIG
-const int CB_Y = 22, CB_H = 38;
+const int CB_Y = 22, CB_H = 38, CB_W = 76, CB_X2 = 82, CB_X3 = 164;
+uint32_t confirmaPadrao = 0;   // hora do 1o toque em PADRAO (0 = nao esta pedindo confirmacao)
 
 void desenharPagina() {
   tela.fillScreen(TFT_BLACK);
@@ -418,13 +455,32 @@ void desenharPagina() {
     botao(0, BTN_Y, BTN_W, BTN_H, "CONFIG", TFT_NAVY);
   } else {
     tela.drawString("Configuracao", 4, 2, &fonts::Font2);
-    botao(0, CB_Y, BTN_W, CB_H, "GRAVAR posicao", temRef ? TFT_NAVY : TFT_ORANGE);
-    botao(BTN_X2, CB_Y, BTN_W, CB_H, autoLigado ? "AUTO: sim" : "AUTO: nao",
+    botao(0, CB_Y, CB_W, CB_H, "GRAVAR", temRef ? TFT_NAVY : TFT_ORANGE);
+    botao(CB_X2, CB_Y, CB_W, CB_H, autoLigado ? "AUTO sim" : "AUTO nao",
           autoLigado ? TFT_DARKGREEN : TFT_MAROON);
+    if (confirmaPadrao) botao(CB_X3, CB_Y, CB_W, CB_H, "certeza?", TFT_RED);
+    else botao(CB_X3, CB_Y, CB_W, CB_H, "PADRAO", TFT_DARKGREY);
     for (int i = 0; i < N_BARRAS; i++) desenharBarra(i);
     botao(0, BTN_Y, BTN_W, BTN_H, "VOLTAR", TFT_NAVY);
   }
   botao(BTN_X2, BTN_Y, BTN_W, BTN_H, "DORMIR", TFT_PURPLE);
+}
+
+// Tela de aviso: barra que encolhe nos ultimos 5 s
+uint32_t avisoDormir = 0;   // hora em que o aviso comecou (0 = sem aviso)
+void desenharAviso(uint32_t passou) {
+  if (passou == 0) {
+    tela.fillScreen(TFT_BLACK);
+    tela.setTextColor(TFT_YELLOW);
+    tela.drawCenterString("Vou dormir...", 120, 110, &fonts::Font4);
+    tela.setTextColor(TFT_WHITE);
+    tela.drawCenterString("toque na tela ou mexa o braco", 120, 145, &fonts::Font2);
+    tela.drawCenterString("para continuar acordado", 120, 163, &fonts::Font2);
+  }
+  float resta = 1.0f - min(1.0f, passou / (float)T_AVISO);
+  int w = (int)(200 * resta);
+  tela.fillRect(20, 200, 200, 14, TFT_DARKGREY);
+  tela.fillRect(20, 200, w, 14, TFT_YELLOW);
 }
 
 void atualizarMonitor(uint32_t agora) {
@@ -433,14 +489,16 @@ void atualizarMonitor(uint32_t agora) {
   else linha(44, angulo < angLiga ? TFT_GREEN : angulo > angApaga ? TFT_RED : TFT_YELLOW,
              "angulo ate a posicao: %5.1f", angulo);
   linha(64,  TFT_WHITE,  "acende <%.0f  apaga >%.0f  auto %s", angLiga, angApaga, autoLigado ? "sim" : "nao");
-  linha(84,  TFT_ORANGE, "giro (media) %5.1f / %.1f", movGiro, limGiro);
+  linha(84,  TFT_ORANGE, "giro (media) %5.2f / %.2f", movGiro, limGiro);
   linha(104, TFT_ORANGE, "acel (media) %5.3f / %.3f", movAcel, limAcel);
   bool mexendo = nivelMovimento() >= 1.0f;
   linha(124, mexendo ? TFT_GREEN : TFT_YELLOW, mexendo ? "em movimento" : "PARADO");
   uint32_t parou = agora - ultimoMovimento, limite = (uint32_t)dormirS * 1000;
-  linha(144, TFT_WHITE, "dorme em %lu s", parou >= limite ? 0 : (limite - parou) / 1000);
+  if (dormirS >= DORMIR_NUNCA) linha(144, TFT_WHITE, "dormir: nunca");
+  else linha(144, TFT_WHITE, "dorme em %lu s", parou >= limite ? 0 : (limite - parou) / 1000);
   linha(164, TFT_DARKGREY, "apagou %lu  acendeu %lu", contaApagou, contaAcendeu);
   linha(184, TFT_DARKGREY, "sensibilidade %.0f  (acordar: %u)", sensib, motThr);
+  linha(204, TFT_DARKGREY, "zero giro %5.2f %5.2f %5.2f", zgx, zgy, zgz);
 }
 
 void atualizarConfig() {
@@ -486,9 +544,11 @@ void toqueComecou(int x, int y) {
     return;
   }
   if (pagina != CONFIG) return;
-  if (y >= CB_Y && y < CB_Y + CB_H) {                 // GRAVAR / AUTO
-    if (x < BTN_X2) gravarRef();
-    else { autoLigado = !autoLigado; salvarConfig(); }
+  if (y >= CB_Y && y < CB_Y + CB_H) {                 // GRAVAR / AUTO / PADRAO
+    if (x < CB_X2) gravarRef();
+    else if (x < CB_X3) { autoLigado = !autoLigado; salvarConfig(); }
+    else if (!confirmaPadrao) confirmaPadrao = millis();   // 1o toque: pede confirmacao
+    else { voltarPadrao(); confirmaPadrao = 0; }           // 2o toque: confirma
     desenharPagina();
     return;
   }
@@ -504,7 +564,7 @@ void tratarTouch(uint32_t agora) {
   if (tocando && !estavaTocando) {
     ultimoToque = agora;
     if (estado == APAGADA) { acender("toque"); toqueSoParaAcender = true; }
-    else toqueComecou(x, y);
+    else if (!avisoDormir) toqueComecou(x, y);    // na tela de aviso, o toque so cancela
   } else if (tocando && arrastando >= 0) {
     ajustarBarra(arrastando, x);
   }
@@ -533,7 +593,14 @@ void setup() {
   mpuOk = mpuIniciar();
   if (mpuOk) {
     for (int i = 0; i < 40; i++) { mpuLer(); delay(5); }
-    fx = ax; fy = ay; fz = az;
+    fx = sx = ax; fy = sy = ay; fz = sz = az;
+    // zero inicial do giro: media de 0,5 s (se estiver parado; senao o
+    // ajuste automatico corrige em alguns segundos)
+    float tx = 0, ty = 0, tz = 0;
+    for (int i = 0; i < 50; i++) { mpuLer(); tx += gx; ty += gy; tz += gz; delay(10); }
+    tx /= 50; ty /= 50; tz /= 50;
+    if (fabsf(tx) < 10 && fabsf(ty) < 10 && fabsf(tz) < 10) { zgx += tx; zgy += ty; zgz += tz; }
+    Serial.printf("[mpu] zero do giro: %.2f %.2f %.2f\n", zgx, zgy, zgz);
     movGiro = movAcel = 0;
   }
   Serial.printf("[mpu] %s  |  posicao gravada: %s\n", mpuOk ? "ok" : "NAO RESPONDE", temRef ? "sim" : "nao");
@@ -559,7 +626,9 @@ void loop() {
   tratarTouch(agora);
 
   // 3) acender/apagar (na tela CONFIG so acende, nunca apaga)
-  if (autoLigado && temRef && mpuOk) {
+  if (avisoDormir) {
+    // durante o aviso de dormir a tela fica acesa
+  } else if (autoLigado && temRef && mpuOk) {
     if (angulo < angLiga) { if (!desdeNaPosicao) desdeNaPosicao = agora; } else desdeNaPosicao = 0;
     if (angulo > angApaga) { if (!desdeForaPosicao) desdeForaPosicao = agora; } else desdeForaPosicao = 0;
 
@@ -572,8 +641,32 @@ void loop() {
     acender("AUTO desligado");
   }
 
-  // 4) parado demais -> dorme
-  if (agora - ultimoMovimento >= (uint32_t)dormirS * 1000) dormir("parado");
+  // 4) parado demais -> aviso de 5 s -> dorme
+  //    Durante o aviso, tocar na tela ou mexer o braco cancela
+  //    (os dois atualizam ultimoMovimento, e ai a conta volta a ficar abaixo do limite).
+  bool parouDemais = dormirS < DORMIR_NUNCA && agora - ultimoMovimento >= (uint32_t)dormirS * 1000;
+  if (parouDemais && !avisoDormir) {
+    avisoDormir = agora;
+    if (estado == APAGADA) acender("aviso de dormir");
+    desenharAviso(0);
+    Serial.println("[sono] aviso: dorme em 5 s");
+  }
+  if (avisoDormir && !parouDemais) {                  // cancelado
+    avisoDormir = 0;
+    estavaTocando = true;                             // o toque que cancelou nao aperta botao
+    desenharPagina();
+    Serial.println("[sono] cancelado");
+  }
+  if (avisoDormir) {
+    uint32_t passou = agora - avisoDormir;
+    if (passou >= T_AVISO) dormir("parado");
+    static uint32_t tAviso = 0;
+    if (agora - tAviso >= 50) { tAviso = agora; desenharAviso(passou); }
+    return;                                           // durante o aviso, nada mais acontece
+  }
+
+  // pedido de confirmacao do PADRAO expira em 3 s
+  if (confirmaPadrao && agora - confirmaPadrao > 3000) { confirmaPadrao = 0; if (pagina == CONFIG) desenharPagina(); }
 
   // 5) tela 5x por segundo (so acesa; nunca no meio de um arrasto)
   if (estado == LIGADA && arrastando < 0 && agora - tTela >= 200) {
