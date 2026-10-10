@@ -66,7 +66,7 @@ static bool SOM_ON = true;
 // 433 MHz (piscas): constantes/estado aqui no topo porque o console usa.
 static const int      TX433_PIN = 21;
 static const uint16_t TX433_CURTO = 330, TX433_LONGO = 990, TX433_SILENCIO = 9000;
-static const int      TX433_REPET = 12;
+static const int      TX433_REPET = 12;              // rajada por comando (fila garante que presses rapidos nao se percam)
 static const uint8_t  TX433_IDENT[3] = { 0x3C, 0x24, 0x06 };
 static const uint8_t  CMD_PISCA_ESQ = 0x11, CMD_PISCA_DIR = 0x12, CMD_LUZ_OFF = 0x03;
 static const uint8_t  CMD_LUZ_LARANJA = 0x13, CMD_LUZ_VERMELHO = 0x23, CMD_LUZ_PISCANDO = 0x33;
@@ -1645,10 +1645,22 @@ static void tx433Montar(rmt_data_t* s, uint8_t cmd) {
   s[k].level0 = 1; s[k].duration0 = TX433_CURTO;
   s[k].level1 = 0; s[k].duration1 = TX433_SILENCIO;
 }
-static void tx433Enviar(uint8_t cmd) {
-  if (!tx433Ok || !rmtTransmitCompleted(TX433_PIN)) return;
+// Fila de 1 posicao: o comando mais recente ganha. Apertar dois botoes em
+// sequencia rapida nao perde o segundo; ele sai assim que o radio liberar.
+static volatile bool    tx433Pend = false;
+static volatile uint8_t tx433Cmd = 0;
+static uint32_t         tx433LivreEm = 0;      // quando o radio volta a estar livre (por tempo)
+static void tx433Enviar(uint8_t cmd) { tx433Cmd = cmd; tx433Pend = true; }   // so agenda
+static void tx433Loop() {
+  // Em vez de depender do rmtTransmitCompleted() (que pode ficar preso em
+  // "ocupado" apos um envio assincrono), espacamos os envios por tempo:
+  // cada quadro dura ~62 ms (40 bits + silencio), vezes as repeticoes.
+  if (!tx433Pend || !tx433Ok || millis() < tx433LivreEm) return;
+  tx433Pend = false;
+  uint8_t cmd = tx433Cmd;
   for (int r = 0; r < TX433_REPET; r++) tx433Montar(&tx433Simb[r * TX433_SIMB], cmd);
   rmtWriteAsync(TX433_PIN, tx433Simb, TX433_SIMB * TX433_REPET);
+  tx433LivreEm = millis() + (uint32_t)TX433_REPET * 63 + 60;
   Serial.printf("[433] 3C 24 06 %02X %02X x%d\n", cmd, cmd ^ 0x05, TX433_REPET);
 }
 static void tx433Setup() {
@@ -1972,6 +1984,7 @@ void loop() {
   updateAdvertising();
   mpuAtualizar();              // le o MPU e acende/apaga a tela pela posicao
   handlePiscaBotoes();         // botoes fisicos dos piscas (IO2/IO3), independem da roda
+  tx433Loop();                 // manda o comando 433 agendado assim que o radio libera
 
   bool wheelOk = client && client->isConnected();
   if (wheelOk) {
