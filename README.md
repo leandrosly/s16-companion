@@ -310,7 +310,27 @@ Família "Triones", variante Dream. Nome `DREAM#0E4D`, MAC `2b:80:04:13:0e:4d`. 
 
 Handshake do app ao conectar: `EF 01 77` (pede o estado), `C5 F0 5C`, `CF 01 02 03 04 FC`, relógio `10 14 1A [mês] [dia] [h] [min] [s] [dia da semana] 0F 01`, `24 2A 2B 42`. O app manda cada comando 3–4 vezes.
 
-**A descobrir:** quantos efeitos existem; a resposta ao `EF 01 77`; se o `9E` funciona sem o handshake.
+**Resposta de estado (FFD4), descoberta com `teste_mochila`:** o módulo **responde** ao `EF 01 77`. A notificação principal é um quadro de 12 bytes que começa em `66` e termina em `99`:
+
+```
+66 00 [23|24] 00 02 28 FF B4 00 00 00 99
+      23 = ligado / 24 = desligado
+```
+
+Mapa dos bytes do quadro `66…99` (testado mandando efeitos 5, 12 e 21 com velocidades diferentes):
+
+| byte | significado |
+|---|---|
+| 2 | liga (`23`) / desliga (`24`) — igual ao comando `CC` |
+| 5 | velocidade (escala interna; acompanha o que foi enviado) |
+| 6 | brilho (enviei `FF`, voltou `F6`) |
+| — | **o índice do efeito NÃO aparece** no quadro |
+
+Então o display pode **sincronizar** liga/desliga, velocidade e brilho ao conectar, mas não tem como ler qual efeito está rodando. Também chegam quadros `D0 … 0D` (12 B), `A0 F0 00 0A` (4 B) e uma rajada de 8 bytes `[x]0 0F 00 00 [n] 00 0F [chk]` (`n` = 0,5,10,15,20,25) — provavelmente temporizadores do módulo.
+
+**Efeitos:** o byte do `9E` é de 1 byte e muda a aparência até o final → tratar como **0–255** (pode haver repetições no topo, mas não importa). Sem nomes: a tela usa "efeito N" com − / + e um DEMO para percorrer.
+
+**A descobrir (menor prioridade):** se o `9E` funciona sem o handshake; o significado dos quadros `D0`/`A0`.
 
 ### Controle dos piscas (433,92 MHz)
 

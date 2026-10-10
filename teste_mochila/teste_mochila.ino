@@ -73,6 +73,7 @@ public:
   }
 };
 LGFX tela;
+LGFX_Sprite barSpr(&tela);   // desenha a barra inteira fora da tela e joga pronta (sem piscar)
 
 // ---------------------------------------------------------------------
 // BLE cliente
@@ -112,13 +113,13 @@ bool conectar() {
   if (!cliente) cliente = NimBLEDevice::createClient();
   if (!cliente->connect(enderecoAlvo)) { Serial.println("[ble] falhou conectar"); return false; }
 
-  NimBLERemoteService* svc = cliente->getService(SVC_LED);
-  if (!svc) { Serial.println("[ble] sem servico FFD5"); cliente->disconnect(); return false; }
-  chrEscr = svc->getCharacteristic(CHR_ESCR);
-  if (!chrEscr) { Serial.println("[ble] sem caracteristica FFD9"); cliente->disconnect(); return false; }
+  chrEscr = nullptr;
 
-  // Escuta TUDO que puder notificar (a resposta ao EF0177 pode vir em
-  // qualquer caracteristica; assim nao dependemos de adivinhar qual).
+  // PRIMEIRO descobre tudo (uma unica vez, com refresh). CUIDADO: chamar
+  // getServices(true)/getCharacteristics(true) DE NOVO depois disto apaga
+  // estes objetos e qualquer ponteiro guardado (ex.: chrEscr) vira lixo ->
+  // foi o que causava o crash em qualquer toque. Por isso: descobrir aqui,
+  // guardar chrEscr depois, e nunca mais dar refresh.
   for (auto svcN : cliente->getServices(true)) {
     for (auto c : svcN->getCharacteristics(true)) {
       if (c->canNotify() || c->canIndicate()) {
@@ -127,6 +128,13 @@ bool conectar() {
       }
     }
   }
+
+  // Agora, SEM refresh, pega a caracteristica de escrita do cache ja estavel
+  NimBLERemoteService* svc = cliente->getService(SVC_LED);
+  if (!svc) { Serial.println("[ble] sem servico FFD5"); cliente->disconnect(); return false; }
+  chrEscr = svc->getCharacteristic(CHR_ESCR);
+  if (!chrEscr) { Serial.println("[ble] sem caracteristica FFD9"); cliente->disconnect(); return false; }
+
   estado = CONECTADO;
   Serial.println("[ble] conectado");
   return true;
@@ -188,16 +196,17 @@ void botao(int x, int y, int w, int h, const char* txt, uint16_t cor, uint16_t t
 }
 
 void desenharBarra(int y, const char* nome, int valor, int vmax) {
-  tela.setTextColor(TFT_WHITE, TFT_BLACK);
-  tela.drawString(nome, 4, y + 8, &fonts::Font2);
-  int cy = y + BARRA_H / 2;
+  // Tudo desenhado no sprite (240x22) e jogado de uma vez: nao pisca nem
+  // deixa rastro, do mesmo jeito que no teste do MPU.
+  const int cy = 11;
   int xv = TRILHO_X1 + (TRILHO_X2 - TRILHO_X1) * valor / vmax;
-  // apaga uma faixa alta o suficiente para cobrir a bolinha antiga (raio 8),
-  // senao o topo/base do circuito anterior fica como rastro
-  tela.fillRect(TRILHO_X1 - 10, cy - 10, (TRILHO_X2 - TRILHO_X1) + 20, 20, TFT_BLACK);
-  tela.fillRect(TRILHO_X1, cy - 3, TRILHO_X2 - TRILHO_X1, 6, TFT_DARKGREY);
-  tela.fillRect(TRILHO_X1, cy - 3, xv - TRILHO_X1, 6, TFT_CYAN);
-  tela.fillCircle(xv, cy, 8, TFT_WHITE);
+  barSpr.fillSprite(TFT_BLACK);
+  barSpr.setTextColor(TFT_WHITE);
+  barSpr.drawString(nome, 4, 2, &fonts::Font2);
+  barSpr.fillRect(TRILHO_X1, cy - 3, TRILHO_X2 - TRILHO_X1, 6, TFT_DARKGREY);
+  barSpr.fillRect(TRILHO_X1, cy - 3, xv - TRILHO_X1, 6, TFT_CYAN);
+  barSpr.fillCircle(xv, cy, 8, TFT_WHITE);
+  barSpr.pushSprite(0, y + BARRA_H / 2 - cy);
 }
 
 void desenharStatus() {
@@ -274,6 +283,7 @@ void setup() {
 
   tela.init();
   tela.setBrightness(200);
+  barSpr.createSprite(240, 22);
   desenharTudo();
 
   NimBLEDevice::init("S16 mochila");
@@ -317,8 +327,8 @@ void loop() {
   if (demoEfeito && estado == CONECTADO && millis() - tDemo > 1500) {
     tDemo = millis();
     mandarEfeito();
-    char t[16]; snprintf(t, sizeof(t), "ef %d  ", efeito);
-    tela.setTextColor(TFT_YELLOW, TFT_BLACK); tela.setTextPadding(120);
+    char t[16]; snprintf(t, sizeof(t), "ef %d", efeito);
+    tela.setTextColor(TFT_YELLOW, TFT_BLACK); tela.setTextPadding(80);   // < TRILHO_X1, nao invade o botao "-"
     tela.drawString(t, 4, EFEITO_Y + 8, &fonts::Font2); tela.setTextPadding(0);
     Serial.printf("[demo] efeito %d\n", efeito);
     efeito++;                         // uint8_t: depois de 255 volta a 0 sozinho
