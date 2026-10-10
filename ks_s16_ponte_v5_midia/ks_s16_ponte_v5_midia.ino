@@ -51,6 +51,28 @@ static bool DUMP_OTHER = true;             // trafego nas OUTRAS caracteristicas
 // os dados enquanto a conexao existir. Quem nao quiser mais dados fecha a conexao de verdade.
 static bool IGNORA_CANCELAR = true;
 
+// MPU-6050: acende a tela quando o pulso esta na posicao de olhar, apaga
+// quando abaixa. Comeca DESLIGADO: so vale depois de "mpu on" + "mpu gravar".
+static bool TELA_AUTO = false;
+
+// Estado e constantes do MPU (aqui no topo porque o handleTouch usa estas
+// variaveis; as FUNcoes do MPU ficam mais abaixo, perto do setup).
+static const uint8_t MPU_END = 0x68;
+static const float   MPU_LSB_ACEL = 8192.0f;      // escala +-4 g
+static const float   MPU_ANG_LIGA = 30;           // graus: perto da posicao -> acende
+static const float   MPU_ANG_APAGA = 50;          // graus: longe -> apaga
+static const uint32_t MPU_T_LIGAR = 250;          // ms na posicao para acender
+static const uint32_t MPU_T_APAGAR = 1500;        // ms fora para apagar
+static const uint32_t MPU_T_TOQUE = 8000;         // ms acesa depois de um toque
+static const uint8_t  MPU_BRILHO = 200;           // brilho com a tela acesa
+static bool  mpuOk = false;
+static bool  mpuTemRef = false;
+static float mpuRx = 0, mpuRy = 0, mpuRz = 1;     // gravidade na posicao "olhando"
+static float mpuFx = 0, mpuFy = 0, mpuFz = 1;     // gravidade filtrada (tira a tremida)
+static float mpuAngulo = 0;
+static bool  telaAcesa = true;
+static uint32_t mpuUltimoToque = 0;
+
 // ---- tabela das opcoes (para o console e para salvar/carregar) ----
 struct OpcaoBool  { const char* nome; bool* valor; bool padrao; };
 struct OpcaoTexto { const char* nome; String* valor; const char* padrao; };
@@ -60,6 +82,7 @@ static OpcaoBool OPCOES_BOOL[] = {
   { "DUMP_NOVOS", &DUMP_NOVOS, true  },
   { "DUMP_OTHER", &DUMP_OTHER, true  },
   { "IGNORA_CANCELAR", &IGNORA_CANCELAR, true },
+  { "TELA_AUTO", &TELA_AUTO, false },
 };
 static OpcaoTexto OPCOES_TEXTO[] = {
   { "NAME_FILTER", &NAME_FILTER, "KS" },
@@ -962,6 +985,16 @@ static void handleSerialConsole() {
       Serial.println("Pareamentos apagados (esqueca o display no Bluetooth do celular tambem)");
       continue;
     }
+    if (nome == "mpu") {               // mpu | mpu gravar | mpu on | mpu off
+      char* arg = strtok_r(nullptr, " ", &save);   // (v[] ja consumiu o resto como hexa; reparse aqui)
+      String a = String(line + 4); a.trim();       // tudo depois de "mpu "
+      if (a == "gravar") mpuSalvarRef();
+      else if (a == "on" || a == "off") { comandoConfig(String("TELA_AUTO ") + a); }
+      else Serial.printf("mpu: %s | TELA_AUTO=%s | ref=%s | angulo=%.1f | tela=%s\n",
+                         mpuOk ? "ok" : "sem sensor", TELA_AUTO ? "on" : "off",
+                         mpuTemRef ? "sim" : "nao", mpuAngulo, telaAcesa ? "acesa" : "apagada");
+      continue;
+    }
     if (!mainRemote) { Serial.println("Roda nao conectada"); continue; }
     uint8_t p[20] = {0xAA, 0x55};
     if (nome == "t" && cnt == 3 && v[1] >= 2 && v[1] <= 15) {
@@ -1430,16 +1463,23 @@ static void drawPage() {
 // ---------- Touch: deslizar troca de tela, toque aperta botao ----------
 static void handleTouch() {
   static bool dedo = false;
+  static bool acordouComToque = false;            // o toque que acendeu a tela nao aperta botao
   static int x0, y0, xu, yu;
   static uint32_t t0;
   int32_t x, y;
   if (tft.getTouch(&x, &y)) {
-    if (!dedo) { dedo = true; x0 = x; y0 = y; t0 = millis(); }
+    mpuUltimoToque = millis();                     // tocar conta como "em uso"
+    if (!dedo) {
+      dedo = true; x0 = x; y0 = y; t0 = millis();
+      acordouComToque = !telaAcesa;                // estava apagada? este toque so acende
+      if (!telaAcesa) { telaAcesa = true; tft.setBrightness(MPU_BRILHO); }
+    }
     xu = x; yu = y;
     return;
   }
   if (!dedo) return;
   dedo = false;                                   // o dedo acabou de soltar
+  if (acordouComToque) { acordouComToque = false; return; }   // so acendeu, ignora o gesto
   int dx = xu - x0, dy = yu - y0;
   if (abs(dx) > 60 && abs(dx) > abs(dy)) {        // deslizou na horizontal
     if (dx < 0 && page < NUM_PAGES - 1) page++;   // para a esquerda: tela da direita
@@ -1467,6 +1507,75 @@ static void handleHornButton() {
   }
 }
 
+// ================= MPU-6050: acender a tela pela posicao do pulso =================
+// (as variaveis estao la em cima, antes do handleTouch que as usa; aqui ficam
+//  so as funcoes, para nao cair no problema dos prototipos do Arduino)
+static bool mpuEscrever(uint8_t reg, uint8_t v) {
+  return lgfx::i2c::writeRegister8(0, MPU_END, reg, v, 0, 400000).has_value();
+}
+static bool mpuLerAccel() {
+  uint8_t b[6];
+  if (!lgfx::i2c::readRegister(0, MPU_END, 0x3B, b, 6, 400000).has_value()) return false;
+  float ax = (int16_t)((b[0] << 8) | b[1]) / MPU_LSB_ACEL;
+  float ay = (int16_t)((b[2] << 8) | b[3]) / MPU_LSB_ACEL;
+  float az = (int16_t)((b[4] << 8) | b[5]) / MPU_LSB_ACEL;
+  mpuFx += 0.1f * (ax - mpuFx); mpuFy += 0.1f * (ay - mpuFy); mpuFz += 0.1f * (az - mpuFz);
+  return true;
+}
+static void mpuSalvarRef() {
+  float m = sqrtf(mpuFx * mpuFx + mpuFy * mpuFy + mpuFz * mpuFz);
+  if (m < 0.5f) { Serial.println("mpu: leitura ruim, tente de novo parado"); return; }
+  mpuRx = mpuFx / m; mpuRy = mpuFy / m; mpuRz = mpuFz / m; mpuTemRef = true;
+  prefs.begin("s16cfg", false);
+  prefs.putBool("mpu_tem", true);
+  prefs.putFloat("mpu_rx", mpuRx); prefs.putFloat("mpu_ry", mpuRy); prefs.putFloat("mpu_rz", mpuRz);
+  prefs.end();
+  Serial.printf("mpu: posicao gravada (%.2f %.2f %.2f)\n", mpuRx, mpuRy, mpuRz);
+}
+static float mpuAnguloAteRef() {
+  float m = sqrtf(mpuFx * mpuFx + mpuFy * mpuFy + mpuFz * mpuFz);
+  if (m < 0.1f) return 180;
+  float c = (mpuFx * mpuRx + mpuFy * mpuRy + mpuFz * mpuRz) / m;
+  if (c > 1) c = 1; else if (c < -1) c = -1;
+  return acosf(c) * 57.2958f;
+}
+static void mpuSetup() {
+  prefs.begin("s16cfg", true);
+  mpuTemRef = prefs.getBool("mpu_tem", false);
+  mpuRx = prefs.getFloat("mpu_rx", 0); mpuRy = prefs.getFloat("mpu_ry", 0); mpuRz = prefs.getFloat("mpu_rz", 1);
+  prefs.end();
+  mpuEscrever(0x6B, 0x80); delay(100);            // reset
+  mpuOk = mpuEscrever(0x6B, 0x01);                // acorda
+  if (mpuOk) {
+    mpuEscrever(0x1C, 0x08);                      // acel +-4 g
+    for (int i = 0; i < 30; i++) { mpuLerAccel(); delay(5); }   // enche o filtro
+  }
+  Serial.printf("mpu: %s%s\n", mpuOk ? "ok" : "NAO RESPONDE",
+                mpuTemRef ? ", posicao gravada" : ", sem posicao (use 'mpu gravar')");
+  mpuUltimoToque = millis();
+}
+
+// Chamada a cada volta do loop; cuida de ler o sensor e acender/apagar a tela.
+static void mpuAtualizar() {
+  static uint32_t tLer = 0, desdeNa = 0, desdeFora = 0;
+  uint32_t agora = millis();
+  if (!mpuOk || agora - tLer < 20) return;        // ~50 leituras/s bastam para a tela
+  tLer = agora;
+  mpuLerAccel();
+  if (!TELA_AUTO || !mpuTemRef) { if (!telaAcesa) { telaAcesa = true; tft.setBrightness(MPU_BRILHO); } return; }
+
+  mpuAngulo = mpuAnguloAteRef();
+  if (mpuAngulo < MPU_ANG_LIGA)  { if (!desdeNa)   desdeNa = agora; }   else desdeNa = 0;
+  if (mpuAngulo > MPU_ANG_APAGA) { if (!desdeFora) desdeFora = agora; } else desdeFora = 0;
+
+  if (!telaAcesa && desdeNa && agora - desdeNa >= MPU_T_LIGAR) {
+    telaAcesa = true; tft.setBrightness(MPU_BRILHO);
+  }
+  if (telaAcesa && desdeFora && agora - desdeFora >= MPU_T_APAGAR && agora - mpuUltimoToque >= MPU_T_TOQUE) {
+    telaAcesa = false; tft.setBrightness(0);
+  }
+}
+
 // ================= Setup / Loop =================
 void setup() {
   Serial.begin(115200);
@@ -1474,6 +1583,7 @@ void setup() {
   tft.init();
   tft.setRotation(0);          // retrato, 240x320 (USB-C embaixo; mude para 2 para inverter)
   tft.setBrightness(200);
+  mpuSetup();                  // depois do tft.init(): a porta I2C 0 ja esta aberta
   spr.setPsram(true);
   spr.setColorDepth(16);
   if (!spr.createSprite(240, 320)) Serial.println("ERRO: sem memoria para o sprite (PSRAM ligada?)");
@@ -1559,6 +1669,7 @@ void loop() {
   handleSerialConsole();
   hidSoltar();
   updateAdvertising();
+  mpuAtualizar();              // le o MPU e acende/apaga a tela pela posicao
 
   bool wheelOk = client && client->isConnected();
   if (wheelOk) {
@@ -1568,7 +1679,8 @@ void loop() {
 
   static uint32_t lastDraw = 0;
   static int lastPage = -1;
-  if (wheelOk && (millis() - lastDraw > 100 || page != lastPage)) {   // ~10 quadros/s
+  // nao desenha com a tela apagada (so o backlight some; a ponte segue rodando)
+  if (wheelOk && telaAcesa && (millis() - lastDraw > 100 || page != lastPage)) {   // ~10 quadros/s
     lastDraw = millis();
     lastPage = page;
     drawPage();

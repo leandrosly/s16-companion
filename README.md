@@ -50,6 +50,7 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 - **WheelLog só funciona na v5 2APPS:** ele exige a lista de serviços idêntica à da roda, e a v5 MIDIA tem 2 serviços a mais (HID `1812` e bateria `180F`).
 - **Controle de mídia** (v5 MIDIA): música e volume do celular direto pelo display, numa identidade Bluetooth separada ("S16 Controle").
 - 3 telas por deslize: **BMS** ← **principal** → **controles**.
+- **MPU na ponte (parte 1):** a tela acende/apaga pela posição do pulso. Começa desligado; ative pelo Serial: `mpu on` depois `mpu gravar` (na posição de olhar). Comandos: `mpu` (status), `mpu on`/`mpu off`, `mpu gravar`. O deep sleep ("roda sumiu") fica para o marco de energia. Tocar na tela sempre acende.
 - Buzina no botão BOOT e na tela; farol (liga/desliga/auto), LEDs, volume da roda.
 - Logs no cartão SD: eventos sempre, viagem sob demanda (5 linhas/s).
 - Relógio acertado pela própria roda ao conectar.
