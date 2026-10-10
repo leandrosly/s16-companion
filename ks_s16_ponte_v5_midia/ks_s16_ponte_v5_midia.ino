@@ -63,6 +63,16 @@ static bool TELA_AUTO = false;
 // Som (piezo/alto-falante pelo codec ES8311). SOM_ON liga/desliga os bipes.
 static bool SOM_ON = true;
 
+// Mochila (Dream): estado aqui no topo porque o console usa.
+static const char* DREAM_MAC = "2b:80:04:13:0e:4d";
+static NimBLEUUID DREAM_SVC((uint16_t)0xFFD5);
+static NimBLEUUID DREAM_WRCHR((uint16_t)0xFFD9);
+static NimBLEClient* dreamCli = nullptr;
+static NimBLERemoteCharacteristic* dreamWr = nullptr;
+static bool dreamQuer = false;          // o usuario pediu para manter conectado
+static bool dreamConectado = false;
+static uint32_t dreamProxTentativa = 0;
+
 // 433 MHz (piscas): constantes/estado aqui no topo porque o console usa.
 static const int      TX433_PIN = 21;
 static const uint16_t TX433_CURTO = 330, TX433_LONGO = 990, TX433_SILENCIO = 9000;
@@ -1033,6 +1043,19 @@ static void handleSerialConsole() {
         Serial.printf("[bond]   %d: %s\n", i, NimBLEDevice::getBondedAddress(i).toString().c_str());
       continue;
     }
+    if (nome == "dream") {             // dream on|off|liga|desliga|cor RR GG BB|ef N
+      String sub = String(line + 6); sub.trim();   // 1a palavra depois de "dream "
+      // (os numeros "RR GG BB" / "N" ja estao em v[1..] parseados como hexa)
+      if (sub == "on")       { dreamQuer = true; dreamProxTentativa = 0; Serial.println("[dream] vou manter conectado"); }
+      else if (sub == "off") { dreamQuer = false; if (dreamCli && dreamCli->isConnected()) dreamCli->disconnect(); dreamConectado = false; Serial.println("[dream] desconectado"); }
+      else if (sub == "liga")    dreamLiga(true);
+      else if (sub == "desliga") dreamLiga(false);
+      else if (sub == "cor" && cnt >= 4)  dreamCor(v[1], v[2], v[3]);   // v[0]="cor"? nao: v[] sao hexas; ver abaixo
+      else if (sub == "ef"  && cnt >= 2)  dreamEfeito(v[1], 0x40, 0xFF);
+      else Serial.printf("[dream] %s  (use: dream on|off|liga|desliga|cor RR GG BB|ef N)\n",
+                         dreamConectado ? "conectado" : dreamQuer ? "tentando" : "off");
+      continue;
+    }
     if (nome == "433") {               // 433 e|d|x|l|v|p (esq, dir, desliga, laranja, verm, piscando)
       String a = String(line + 4); a.trim();
       if (a == "e") piscaToggle(1);
@@ -1627,6 +1650,53 @@ static void handleHornButton() {
   }
 }
 
+// ================= MOCHILA (modulo Dream / Happy Lighting) — cliente BLE =================
+// ETAPA 1 (provar coexistencia): o display conecta no Dream SOB COMANDO (Serial),
+// so para confirmar que a roda e os apps continuam de pe com um 2o cliente ativo.
+// Endereco fixo (do nRF): 2B:80:04:13:0E:4D. Conexao DIRETA pelo endereco, sem
+// mexer no scanner da roda. Escrita em FFD9 (dentro do servico FFD5), sem resposta.
+// (estado la em cima, antes do console; aqui so as funcoes)
+static bool dreamConectar() {
+  if (!dreamCli) dreamCli = NimBLEDevice::createClient();
+  // tenta PUBLIC e depois RANDOM (nao sabemos ao certo o tipo do endereco)
+  const uint8_t tipos[2] = { BLE_ADDR_PUBLIC, BLE_ADDR_RANDOM };
+  for (int t = 0; t < 2; t++) {
+    NimBLEAddress a(std::string(DREAM_MAC), tipos[t]);
+    Serial.printf("[dream] conectando %s (tipo %d)...\n", DREAM_MAC, tipos[t]);
+    if (!dreamCli->connect(a)) continue;
+    NimBLERemoteService* svc = dreamCli->getService(DREAM_SVC);
+    if (!svc) { dreamCli->disconnect(); continue; }
+    dreamWr = svc->getCharacteristic(DREAM_WRCHR);
+    if (!dreamWr) { dreamCli->disconnect(); continue; }
+    dreamConectado = true;
+    Serial.println("[dream] conectado (FFD9 ok)");
+    return true;
+  }
+  Serial.println("[dream] NAO conectou");
+  return false;
+}
+static void dreamEnviar(const uint8_t* d, size_t n) {
+  if (!dreamConectado || !dreamWr) { Serial.println("[dream] nao conectado"); return; }
+  for (int r = 0; r < 2; r++) { dreamWr->writeValue(d, n, false); delay(8); }
+}
+static void dreamLiga(bool on)  { uint8_t c[3] = { 0xCC, on ? (uint8_t)0x23 : (uint8_t)0x24, 0x33 }; dreamEnviar(c, 3); }
+static void dreamCor(uint8_t r, uint8_t g, uint8_t b) { uint8_t c[7] = { 0x56, r, g, b, 0x00, 0xF0, 0xAA }; dreamEnviar(c, 7); }
+static void dreamEfeito(uint8_t ef, uint8_t vel, uint8_t bri) {
+  uint8_t c[7] = { 0x9E, 0x00, ef, vel, bri < 0x19 ? (uint8_t)0x19 : bri, 0x00, 0xE9 }; dreamEnviar(c, 7);
+}
+// Gestao da conexao (chamada no loop): conecta quando pedido, detecta queda.
+// Atencao: dreamConectar() BLOQUEIA ate conectar/timeout — ok para teste manual.
+static void dreamLoop() {
+  if (dreamQuer && !dreamConectado && millis() > dreamProxTentativa) {
+    dreamProxTentativa = millis() + 4000;
+    dreamConectar();
+  }
+  if (dreamConectado && dreamCli && !dreamCli->isConnected()) {
+    dreamConectado = false;
+    Serial.println("[dream] caiu");
+  }
+}
+
 // ================= 433 MHz: imitar o controle dos piscas (STX882 no IO21) =================
 // Independente do BLE e do I2C: usa o periferico RMT, que gera os pulsos sozinho.
 // Protocolo (ver README): 40 bits = 5 bytes [3C 24 06 cmd cmd^05] + pulso curto + ~9 ms.
@@ -1985,6 +2055,7 @@ void loop() {
   mpuAtualizar();              // le o MPU e acende/apaga a tela pela posicao
   handlePiscaBotoes();         // botoes fisicos dos piscas (IO2/IO3), independem da roda
   tx433Loop();                 // manda o comando 433 agendado assim que o radio libera
+  dreamLoop();                 // mantem/recupera a conexao com a mochila (Dream), se pedida
 
   bool wheelOk = client && client->isConnected();
   if (wheelOk) {

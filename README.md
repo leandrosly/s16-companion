@@ -52,6 +52,7 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 - 3 telas por deslize: **BMS** ← **principal** → **controles**.
 - Integração confirmada: apps + telemetria + controle de mídia + MPU + piezo + 433 rodando juntos (apps caíram uma vez por **resíduo de pareamento no celular**, não por bug — resolvido com a faxina acima).
 - **MPU na ponte (parte 1):** a tela acende/apaga pela posição do pulso. Começa desligado; ative pelo Serial: `mpu on` depois `mpu gravar` (na posição de olhar). Comandos: `mpu` (status), `mpu on`/`mpu off`, `mpu gravar`. O deep sleep ("roda sumiu") fica para o marco de energia. Tocar na tela sempre acende.
+- **Mochila/Dream na ponte (parte 4, Etapa 1):** o display vira **2º cliente BLE** (conecta no Dream, endereço fixo `2B:80:04:13:0E:4D`, tipo PUBLIC com fallback RANDOM), **sob comando** pelo Serial (`dream on`/`off`/`liga`/`desliga`/`cor RR GG BB`/`ef N`), só para provar coexistência com roda+apps. **Coexistência PROVADA** com `MAX_CONNECTIONS` ainda em **6**: roda + 3 apps + controle de mídia + cliente do Dream juntos, ninguém caiu (o bump para 7 era precaução, não foi preciso). Tela + sempre-conectado + luz de freio = Etapa 2.
 - **433/piscas na ponte (parte 3 + tela):** transmissor STX882 no IO21 (RMT, independente de BLE/I2C). **Piscas = lanterninhas tipo bike** (par no capacete + par na traseira do mono), controladas pelo 433 — não confundir com o módulo iFlight/Dream (BLE). Tela "Piscas / Luz" (4ª tela, deslize após controles): escolhe o modo parado (apagado/laranja/vermelho/piscando) e os piscas ESQ/DIR. **Botões físicos IO2 (esq) / IO3 (dir)** ao GND. Lógica: apertar o pisca liga; apertar de novo **volta ao modo base** (não manda "desligar"), então se estava vermelho volta a vermelho. `luz_base` salvo na flash. Serial: `433 e|d` (pisca, toggle), `433 x|l|v|p` (modo base). Luz de freio automática (vermelho na frenagem) entra depois.
 - **Som na ponte (parte 2):** codec ES8311 (config por I2C no `loop`/`setup`) + I2S numa **tarefa separada** (só mexe no I2S, não briga com o touch/MPU). Bipe de confirmação ao apertar a buzina (BOOT). Comandos Serial: `som bipe`, `som alarme`, `som on`/`som off`. `SOM_ON` liga/desliga (salvo). Frequência fixa em 4 kHz (ressonância do piezo de 35 mm). Alarmes de PWM entram depois, usando `somAlarme()`.
 - Buzina no botão BOOT e na tela; farol (liga/desliga/auto), LEDs, volume da roda.
@@ -381,6 +382,9 @@ O botão central cicla laranja → vermelho → piscando → desliga, mas o cód
 - Guarda a lista de serviços em cache: desligar/ligar o Bluetooth (não pareado) ou esquecer e parear de novo (pareado).
 - Às vezes coloca vários apps na **mesma** conexão.
 - O nRF Connect em segundo plano segura conexões.
+
+**RMT (433 MHz)**
+- `rmtTransmitCompleted()` pode ficar preso em "ocupado" após um envio assíncrono e travar TODOS os envios seguintes. Não dependa dele: espace os envios por **tempo** (`millis()`), calculado pela duração da rajada. Fila de 1 posição (último comando ganha) cobre cliques rápidos.
 
 **Placa**
 - Touch girado 180° em relação à imagem.

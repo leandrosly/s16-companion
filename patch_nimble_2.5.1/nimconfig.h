@@ -20,7 +20,7 @@
  **********************************************/
 
 /** @brief Un-comment to change the number of simultaneous connections (esp controller max is 9) */
-#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 6   /* PATCH S16: o controlador do ESP32-S3 recebe MAX+2 "atividades"; com anuncio estendido, conexoes + anuncios precisam caber em MAX-1. 6 = roda + 2 apps + controle + anuncios */
+#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 6   /* PATCH S16: o controlador do ESP32-S3 recebe MAX+2 "atividades"; com anuncio estendido, conexoes + anuncios precisam caber em MAX-1. 6 = roda + 2 apps + controle + anuncios (provou-se que cabe ate o cliente do Dream em 6) */
 
 /** @brief Un-comment to enable storing the timestamp when an attribute value is updated\n
  *  This allows for checking the last update time using getTimeStamp() or getValue(time_t*)\n
