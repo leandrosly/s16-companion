@@ -33,9 +33,11 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 
 | # | Frente | Próximo passo concreto |
 |---|---|---|
-| 1 | **Mochila iFlight (módulo Dream)** | Testar `9E` pelo nRF Connect, descobrir quantos efeitos existem e capturar a resposta ao `EF 01 77`. Depois: tela da mochila no display. |
-| 2 | **MPU-6050** | ✅ I2C testado (Plano A, `teste_i2c_mpu`). Agora: `teste_tela_mpu` — acender/apagar a tela pela posição do pulso e dormir parado. |
-| 3 | **Piscas de 433 MHz** | Rodar `captura_433` no C3 com o receptor e anotar os códigos de cada botão. |
+| 1 | **Mochila iFlight (módulo Dream)** | Controlar pelo display: ligar/desligar, cor e efeitos (`teste_mochila`). Depois: tela da mochila integrada. |
+| 2 | **Luz de freio** | Acender o vermelho (mochila / pisca 433) quando a corrente fica negativa na frenagem (limite ~−2 A, com histerese). |
+| 3 | **Integração na ponte v5** | Juntar MPU, piezo e 433 (já provados em teste) como funções da ponte. |
+
+**Concluídos** (viram funções na integração): ✅ MPU (`teste_tela_mpu`), ✅ Piezo (`teste_piezo`), ✅ Piscas 433 MHz (`captura_433` + `teste_tx433`).
 
 ---
 
@@ -77,7 +79,7 @@ ESP32-S3 (16 MB flash, 8 MB PSRAM OPI), tela IPS 2,8" 240×320 (ILI9341V, SPI), 
 | Tela (SPI) | SCK 12, MOSI 11, MISO 13, CS 10, DC 46, backlight 45 |
 | Touch (I2C) | SDA 16, SCL 15, INT 17, RST 18 — **touch girado 180°: inverter X e Y** |
 | Cartão SD (SDIO, 1 linha) | CLK 38, CMD 40, D0 39 |
-| Áudio (I2S) | EN 1 (ativo baixo), MCLK 4, BCLK 5, DOUT 6, LRCK 7, DIN 8 |
+| Áudio (I2S) | EN 1 (amplificador: 0 = liga), MCLK 4, BCLK 5, LRCK 7, **IO8 = som ESP32→codec**, IO6 = microfone codec→ESP32. Codec ES8311 configurado por I2C (0x18) |
 | Bateria (ADC) | 9 |
 | LED RGB (WS2812) | 42 |
 | Botão BOOT | 0 (usado como buzina) |
@@ -156,6 +158,9 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 | `galeria_fotos/` | Exemplo de aprendizado: tela + touch + sprites + zoom (+ script `converter_fotos.py`) |
 | `captura_433/` | Sketch para descobrir os códigos do controle dos piscas (ESP32-C3) |
 | `teste_i2c_mpu/` | Teste do MPU-6050 dividindo o I2C com o touch (Plano A LovyanGFX / Plano B Wire1) |
+| `teste_tx433/` | Display imitando o controle dos piscas (STX882 no IO21, RMT) |
+| `teste_mochila/` | Display como cliente BLE do módulo Dream: liga/cor/efeito/handshake |
+| `teste_piezo/` | Teste do piezo no SPEAKER: ES8311 + I2S, varredura para achar a ressonância, bipe/pisca/alarme |
 | `teste_tela_mpu/` | Teste: acender/apagar a tela pela posição do pulso + deep sleep parado (acorda pelo BOOT ou INT do MPU) |
 
 ---
@@ -307,6 +312,25 @@ Handshake do app ao conectar: `EF 01 77` (pede o estado), `C5 F0 5C`, `CF 01 02 
 
 **A descobrir:** quantos efeitos existem; a resposta ao `EF 01 77`; se o `9E` funciona sem o handshake.
 
+### Controle dos piscas (433,92 MHz)
+
+Capturado com `captura_433` v2 (SRX882S no C3). Quadro de **40 bits** (5 bytes, MSB primeiro) + pulso curto + ~9 ms de silêncio; o controle repete ~14×.
+
+| | |
+|---|---|
+| Bit 1 | ligado ~990 µs + desligado ~330 µs |
+| Bit 0 | ligado ~330 µs + desligado ~990 µs |
+| Quadro | `3C 24 06 [cmd] [cmd XOR 05]` (3C 24 06 = identidade deste controle) |
+
+| cmd | Função |
+|---|---|
+| `11` | pisca esquerda liga |
+| `12` | pisca direita liga |
+| `03` | desliga (piscas e luz) |
+| `13` / `23` / `33` | luz laranja / vermelha / laranja piscando |
+
+O botão central cicla laranja → vermelho → piscando → desliga, mas o código de cada modo é diferente: o display pode escolher o modo direto. A rc-switch não decodifica (máx. 32 bits). Transmissão: `teste_tx433` (STX882 no IO21, pelo periférico RMT).
+
 ---
 
 ## 10. Lições aprendidas (as pegadinhas)
@@ -345,8 +369,8 @@ Handshake do app ao conectar: `EF 01 77` (pede o estado), `C5 F0 5C`, `CF 01 02 
 ### Agora → ver [Foco atual](#1-foco-atual)
 
 ### Próximo
-- [ ] **Tela da mochila** no display (liga/desliga, paleta, brilho, efeitos).
-- [ ] **Luz de freio** pela corrente negativa (limite ~−2 A, com histerese).
+- [ ] **Tela da mochila** no display (liga/desliga, paleta, brilho, efeitos) → frente ativa nº 1.
+- [ ] **Luz de freio** pela corrente negativa (limite ~−2 A, com histerese) → frente ativa nº 2.
 - [ ] **Setas** por botão (mochila + piscas 433 MHz), com desligamento automático.
 - [ ] **Bateria do display**: LiPo + leitura no IO9 + ícone na tela.
 - [ ] **Energia**: chave física + sono automático quando a roda some (acordar pelo botão ou pelo INT do MPU).
