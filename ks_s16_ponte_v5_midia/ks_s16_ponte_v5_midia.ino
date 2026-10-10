@@ -63,6 +63,25 @@ static bool TELA_AUTO = false;
 // Som (piezo/alto-falante pelo codec ES8311). SOM_ON liga/desliga os bipes.
 static bool SOM_ON = true;
 
+// 433 MHz (piscas): constantes/estado aqui no topo porque o console usa.
+static const int      TX433_PIN = 21;
+static const uint16_t TX433_CURTO = 330, TX433_LONGO = 990, TX433_SILENCIO = 9000;
+static const int      TX433_REPET = 12;
+static const uint8_t  TX433_IDENT[3] = { 0x3C, 0x24, 0x06 };
+static const uint8_t  CMD_PISCA_ESQ = 0x11, CMD_PISCA_DIR = 0x12, CMD_LUZ_OFF = 0x03;
+static const uint8_t  CMD_LUZ_LARANJA = 0x13, CMD_LUZ_VERMELHO = 0x23, CMD_LUZ_PISCANDO = 0x33;
+static const int      TX433_SIMB = 41;               // 40 bits + 1 simbolo final
+static rmt_data_t     tx433Simb[TX433_SIMB * TX433_REPET];
+static bool           tx433Ok = false;
+
+// Estado das luzes/piscas (lanterninhas de bike: capacete + traseira do mono)
+static const int PIN_PISCA_ESQ = 2, PIN_PISCA_DIR = 3;   // botoes ao GND (INPUT_PULLUP)
+enum { LUZ_OFF = 0, LUZ_LARANJA = 1, LUZ_VERMELHO = 2, LUZ_PISCANDO = 3 };
+static const uint8_t LUZ_CMD[4] = { CMD_LUZ_OFF, CMD_LUZ_LARANJA, CMD_LUZ_VERMELHO, CMD_LUZ_PISCANDO };
+static const char*   LUZ_NOME[4] = { "apagado", "laranja", "vermelho", "piscando" };
+static int  luzBase = LUZ_OFF;          // modo "parado" das luzes; salvo na flash
+static int  piscaAtivo = 0;             // 0 nenhum, 1 esquerda, 2 direita
+
 // Pinos e estado do som (aqui no topo porque o console/buzina usam estas
 // variaveis; as FUNcoes do som ficam mais abaixo, perto do setup).
 // Pinos (lcdwiki): amplificador EN=IO1 (0=liga), MCLK 4, BCLK 5, LRCK 7,
@@ -1014,6 +1033,18 @@ static void handleSerialConsole() {
         Serial.printf("[bond]   %d: %s\n", i, NimBLEDevice::getBondedAddress(i).toString().c_str());
       continue;
     }
+    if (nome == "433") {               // 433 e|d|x|l|v|p (esq, dir, desliga, laranja, verm, piscando)
+      String a = String(line + 4); a.trim();
+      if (a == "e") piscaToggle(1);
+      else if (a == "d") piscaToggle(2);
+      else if (a == "x") luzSetBase(LUZ_OFF);
+      else if (a == "l") luzSetBase(LUZ_LARANJA);
+      else if (a == "v") luzSetBase(LUZ_VERMELHO);
+      else if (a == "p") luzSetBase(LUZ_PISCANDO);
+      else Serial.printf("433: %s  base=%s pisca=%d  (use: 433 e|d|x|l|v|p)\n",
+                         tx433Ok ? "ok" : "sem RMT", LUZ_NOME[luzBase], piscaAtivo);
+      continue;
+    }
     if (nome == "som") {               // som | som bipe | som alarme | som on | som off
       String a = String(line + 4); a.trim();
       if (a == "bipe") somBipe();
@@ -1149,7 +1180,7 @@ static uint16_t pwmColor(int p) {
 }
 
 // Telas: 0 = BMS (esquerda), 1 = principal, 2 = controles (direita)
-static const int NUM_PAGES = 3;
+static const int NUM_PAGES = 4;
 static int page = 1;
 static uint32_t hornFlashUntil = 0;     // mostra "BUZINA" na barra por um instante
 
@@ -1492,9 +1523,58 @@ static void tocarControles(int x, int y) {
   }
 }
 
+// ---------- Tela 3: Piscas / Luz ----------
+static const uint16_t LUZ_COR[4] = { 0x3186 /*cinza*/, 0xFD20 /*laranja*/, TFT_RED, TFT_MAGENTA };
+// 4 botoes de modo (2x2) e 2 botoes de pisca grandes
+static const int PM_X[2] = { 6, 124 }, PM_W = 110, PM_H = 46, PM_Y0 = 40, PM_DY = 52;
+static const int PB_Y = 176, PB_H = 92;
+
+static void drawPiscas() {
+  spr.fillScreen(TFT_BLACK);
+  drawTopBar();
+  spr.setTextDatum(middle_center);
+  spr.setFont(&fonts::Font2);
+  spr.setTextColor(COL_DIM);
+  spr.drawString("Luz (modo parado)", 120, 32);
+
+  for (int m = 0; m < 4; m++) {
+    int x = PM_X[m % 2], y = PM_Y0 + (m / 2) * PM_DY;
+    bool sel = (luzBase == m && !piscaAtivo);
+    spr.fillRoundRect(x, y, PM_W, PM_H, 8, sel ? LUZ_COR[m] : 0x2124);
+    spr.drawRoundRect(x, y, PM_W, PM_H, 8, LUZ_COR[m]);
+    spr.setTextColor(sel && m == 0 ? TFT_WHITE : sel ? TFT_BLACK : TFT_WHITE);
+    spr.drawString(LUZ_NOME[m], x + PM_W / 2, y + PM_H / 2);
+  }
+
+  const char* lbl[2] = { "< ESQ", "DIR >" };
+  for (int k = 0; k < 2; k++) {
+    int x = PM_X[k]; bool on = (piscaAtivo == k + 1);
+    spr.fillRoundRect(x, PB_Y, PM_W, PB_H, 10, on ? 0xFD20 : 0x2124);
+    spr.drawRoundRect(x, PB_Y, PM_W, PB_H, 10, 0xFD20);
+    spr.setFont(&fonts::FreeSansBold12pt7b);
+    spr.setTextColor(on ? TFT_BLACK : TFT_WHITE);
+    spr.drawString(lbl[k], x + PM_W / 2, PB_Y + PM_H / 2);
+    if (on) { spr.setFont(&fonts::Font2); spr.drawString("piscando", x + PM_W / 2, PB_Y + PB_H - 16); }
+  }
+  spr.setFont(&fonts::Font2);
+  spr.setTextColor(COL_DIM);
+  spr.drawString(tx433Ok ? "433 MHz pronto (IO21)" : "433 sem RMT", 120, 300);
+  spr.pushSprite(0, 0);
+}
+
+static void tocarPiscas(int x, int y) {
+  for (int m = 0; m < 4; m++) {
+    int bx = PM_X[m % 2], by = PM_Y0 + (m / 2) * PM_DY;
+    if (x >= bx && x < bx + PM_W && y >= by && y < by + PM_H) { luzSetBase(m); return; }
+  }
+  for (int k = 0; k < 2; k++)
+    if (x >= PM_X[k] && x < PM_X[k] + PM_W && y >= PB_Y && y < PB_Y + PB_H) { piscaToggle(k + 1); return; }
+}
+
 static void drawPage() {
   if (page == 0) drawBms();
   else if (page == 2) drawControls();
+  else if (page == 3) drawPiscas();
   else drawData();
 }
 
@@ -1525,6 +1605,7 @@ static void handleTouch() {
     Serial.printf("Tela %d\n", page);
   } else if (abs(dx) < 15 && abs(dy) < 15 && millis() - t0 < 600) {   // foi um toque
     if (page == 2) tocarControles(x0, y0);
+    else if (page == 3) tocarPiscas(x0, y0);
   }
 }
 
@@ -1542,6 +1623,73 @@ static void handleHornButton() {
       somBipe();                                  // bipe local de confirmacao
       hornFlashUntil = millis() + 600;
       logEvent("botao BOOT: buzina");
+    }
+  }
+}
+
+// ================= 433 MHz: imitar o controle dos piscas (STX882 no IO21) =================
+// Independente do BLE e do I2C: usa o periferico RMT, que gera os pulsos sozinho.
+// Protocolo (ver README): 40 bits = 5 bytes [3C 24 06 cmd cmd^05] + pulso curto + ~9 ms.
+// Bit 1 = ligado ~990us + desligado ~330us; Bit 0 = o contrario.
+// (constantes/estado do 433 estao la em cima, antes do console que os usa)
+static void tx433Montar(rmt_data_t* s, uint8_t cmd) {
+  uint8_t b[5] = { TX433_IDENT[0], TX433_IDENT[1], TX433_IDENT[2], cmd, (uint8_t)(cmd ^ 0x05) };
+  int k = 0;
+  for (int by = 0; by < 5; by++)
+    for (int i = 7; i >= 0; i--) {
+      bool um = (b[by] >> i) & 1;
+      s[k].level0 = 1; s[k].duration0 = um ? TX433_LONGO : TX433_CURTO;
+      s[k].level1 = 0; s[k].duration1 = um ? TX433_CURTO : TX433_LONGO;
+      k++;
+    }
+  s[k].level0 = 1; s[k].duration0 = TX433_CURTO;
+  s[k].level1 = 0; s[k].duration1 = TX433_SILENCIO;
+}
+static void tx433Enviar(uint8_t cmd) {
+  if (!tx433Ok || !rmtTransmitCompleted(TX433_PIN)) return;
+  for (int r = 0; r < TX433_REPET; r++) tx433Montar(&tx433Simb[r * TX433_SIMB], cmd);
+  rmtWriteAsync(TX433_PIN, tx433Simb, TX433_SIMB * TX433_REPET);
+  Serial.printf("[433] 3C 24 06 %02X %02X x%d\n", cmd, cmd ^ 0x05, TX433_REPET);
+}
+static void tx433Setup() {
+  tx433Ok = rmtInit(TX433_PIN, RMT_TX_MODE, RMT_MEM_NUM_BLOCKS_1, 1000000);   // 1 tick = 1 us
+  Serial.printf("433: %s\n", tx433Ok ? "ok (IO21)" : "ERRO ao iniciar o RMT");
+  pinMode(PIN_PISCA_ESQ, INPUT_PULLUP);
+  pinMode(PIN_PISCA_DIR, INPUT_PULLUP);
+  prefs.begin("s16cfg", true);
+  luzBase = prefs.getInt("luz_base", LUZ_OFF);
+  prefs.end();
+}
+
+// ---- Logica das luzes/piscas ----
+static void luzSetBase(int modo) {         // escolhe o modo "parado" e ja aplica
+  luzBase = modo;
+  prefs.begin("s16cfg", false); prefs.putInt("luz_base", luzBase); prefs.end();
+  if (!piscaAtivo) tx433Enviar(LUZ_CMD[modo]);   // se um pisca estiver ligado, aplica ao desligar
+  logEvent("luz base: %s", LUZ_NOME[modo]);
+}
+// Aperta o pisca: liga; apertando de novo, VOLTA ao modo base (nao manda "desligar").
+static void piscaToggle(int lado) {         // 1 esquerda, 2 direita
+  if (piscaAtivo == lado) {                 // desliga -> volta ao que estava
+    piscaAtivo = 0;
+    tx433Enviar(LUZ_CMD[luzBase]);
+    logEvent("pisca off -> %s", LUZ_NOME[luzBase]);
+  } else {
+    piscaAtivo = lado;
+    tx433Enviar(lado == 1 ? CMD_PISCA_ESQ : CMD_PISCA_DIR);
+    logEvent("pisca %s", lado == 1 ? "esquerda" : "direita");
+  }
+}
+// Botoes fisicos IO2/IO3 (independem da roda; funcionam sempre)
+static void handlePiscaBotoes() {
+  static bool antes[2] = { false, false };
+  static uint32_t tMud[2] = { 0, 0 };
+  const int pinos[2] = { PIN_PISCA_ESQ, PIN_PISCA_DIR };
+  for (int k = 0; k < 2; k++) {
+    bool ap = digitalRead(pinos[k]) == LOW;
+    if (ap != antes[k] && millis() - tMud[k] > 30) {   // antirrepique
+      tMud[k] = millis(); antes[k] = ap;
+      if (ap) piscaToggle(k + 1);                       // so na hora de apertar
     }
   }
 }
@@ -1722,6 +1870,7 @@ void setup() {
   tft.setBrightness(200);
   mpuSetup();                  // depois do tft.init(): a porta I2C 0 ja esta aberta
   somSetup();                  // codec ES8311 (I2C) + I2S + tarefa de som
+  tx433Setup();                // transmissor 433 MHz (RMT no IO21)
   spr.setPsram(true);
   spr.setColorDepth(16);
   if (!spr.createSprite(240, 320)) Serial.println("ERRO: sem memoria para o sprite (PSRAM ligada?)");
@@ -1822,6 +1971,7 @@ void loop() {
   hidSoltar();
   updateAdvertising();
   mpuAtualizar();              // le o MPU e acende/apaga a tela pela posicao
+  handlePiscaBotoes();         // botoes fisicos dos piscas (IO2/IO3), independem da roda
 
   bool wheelOk = client && client->isConnected();
   if (wheelOk) {

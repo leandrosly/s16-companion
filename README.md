@@ -50,7 +50,9 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 - **WheelLog só funciona na v5 2APPS:** ele exige a lista de serviços idêntica à da roda, e a v5 MIDIA tem 2 serviços a mais (HID `1812` e bateria `180F`).
 - **Controle de mídia** (v5 MIDIA): música e volume do celular direto pelo display, numa identidade Bluetooth separada ("S16 Controle").
 - 3 telas por deslize: **BMS** ← **principal** → **controles**.
+- Integração confirmada: apps + telemetria + controle de mídia + MPU + piezo + 433 rodando juntos (apps caíram uma vez por **resíduo de pareamento no celular**, não por bug — resolvido com a faxina acima).
 - **MPU na ponte (parte 1):** a tela acende/apaga pela posição do pulso. Começa desligado; ative pelo Serial: `mpu on` depois `mpu gravar` (na posição de olhar). Comandos: `mpu` (status), `mpu on`/`mpu off`, `mpu gravar`. O deep sleep ("roda sumiu") fica para o marco de energia. Tocar na tela sempre acende.
+- **433/piscas na ponte (parte 3 + tela):** transmissor STX882 no IO21 (RMT, independente de BLE/I2C). **Piscas = lanterninhas tipo bike** (par no capacete + par na traseira do mono), controladas pelo 433 — não confundir com o módulo iFlight/Dream (BLE). Tela "Piscas / Luz" (4ª tela, deslize após controles): escolhe o modo parado (apagado/laranja/vermelho/piscando) e os piscas ESQ/DIR. **Botões físicos IO2 (esq) / IO3 (dir)** ao GND. Lógica: apertar o pisca liga; apertar de novo **volta ao modo base** (não manda "desligar"), então se estava vermelho volta a vermelho. `luz_base` salvo na flash. Serial: `433 e|d` (pisca, toggle), `433 x|l|v|p` (modo base). Luz de freio automática (vermelho na frenagem) entra depois.
 - **Som na ponte (parte 2):** codec ES8311 (config por I2C no `loop`/`setup`) + I2S numa **tarefa separada** (só mexe no I2S, não briga com o touch/MPU). Bipe de confirmação ao apertar a buzina (BOOT). Comandos Serial: `som bipe`, `som alarme`, `som on`/`som off`. `SOM_ON` liga/desliga (salvo). Frequência fixa em 4 kHz (ressonância do piezo de 35 mm). Alarmes de PWM entram depois, usando `somAlarme()`.
 - Buzina no botão BOOT e na tela; farol (liga/desliga/auto), LEDs, volume da roda.
 - Logs no cartão SD: eventos sempre, viagem sob demanda (5 linhas/s).
@@ -64,7 +66,7 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 ### Problemas conhecidos ⚠️
 
 - **Um 3º app** às vezes funciona porque o Android coloca dois apps na mesma conexão, mas pode cair em cascata. Garantido: 2 apps.
-- **Controle de mídia repareia a cada reboot** e às vezes aparece como "KSN-S16P--4C4B": limitação conhecida, **em aberto**. A tentação é pedir a IRK do celular (`setSecurityRespKey(ENC|ID)`) — isso conserta o re-pareamento, **mas liga a resolução de endereço no controlador e quebra as conexões dos apps na identidade da roda** (testado: no nRF a aba da roda conecta e fica com GATT vazio). Então ficamos com `setSecurityInitKey(ENC|ID)` + `setSecurityRespKey(ENC)`: apps funcionam, controle repareia. Conserto futuro precisa reconhecer o celular SEM ligar a resolução global (ex.: controle sem bonding, ou resolução por software). Diagnóstico: `bonds` no Serial, `[bond] restaurados no boot: N`.
+- ⭐ **EM ABERTO (resolver): o controle de mídia repareia a cada vez que o display reinicia/religa.** Cenário real: parar pra tomar um sorvete, a luva fica parada, o display dorme; ao voltar, o display religa e o controle **não reconecta sozinho** — tem que parear de novo. Para um produto final isso não é aceitável. Causa do beco: guardar a identidade (IRK) do celular conserta o reconhecimento **mas liga a resolução de endereço no controlador, o que derruba as conexões dos apps na identidade da roda** (testado e confirmado). Hoje: `setSecurityInitKey(ENC|ID)` + `setSecurityRespKey(ENC)` → apps OK, controle repareia. Caminhos a investigar (dedicado, sem pressa): (a) HID sem bonding; (b) guardar a IRK mas manter o anúncio da roda conectável; (c) resolver o endereço do celular por software. Diagnóstico pronto: `bonds` no Serial e `[bond] restaurados no boot: N`.
 - Os comandos de próxima/anterior **da roda** (`95`) pulam mais de uma música (é da roda, acontece também no app da KingSong). A v5 MIDIA resolve controlando o celular direto.
 - O app da KingSong mostra o histórico com horário deslocado (bug de fuso do app; a roda guarda a hora local certa).
 
@@ -92,7 +94,7 @@ ESP32-S3 (16 MB flash, 8 MB PSRAM OPI), tela IPS 2,8" 240×320 (ILI9341V, SPI), 
 | Conector | Pinos | Plano de uso |
 |---|---|---|
 | I2C | 3.3V, GND, IO15 (SCL), IO16 (SDA) | **MPU-6050 (0x68)** no mesmo barramento do touch (0x38) e do codec ES8311 (0x18), usando as funções `lgfx::i2c` da LovyanGFX (testado: 0 erros com o touch em uso) |
-| GPIO | IO21, IO14, IO3, IO2 | IO14 = INT do MPU (acordar do deep sleep); IO2 = pisca esquerda; IO3 = pisca direita (botões ao GND); IO21 = STX882 (433 MHz) |
+| GPIO | IO21, IO14, IO3, IO2 | IO21 = STX882 (433 MHz); IO14 = INT do MPU; **IO2 = botão pisca esquerda, IO3 = botão pisca direita** (ao GND, INPUT_PULLUP, já ativos no firmware) |
 | UART | 5V, GND, TXD (IO44), RXD (IO43) | livre: 5 V para receptor 433 MHz, ou UART para GPS |
 | BAT | + / − | LiPo 3,7 V (**conferir a polaridade antes de ligar!**) |
 | SPEAKER | 2 pinos | piezo passivo + 100 Ω em série (saída em ponte: nenhum dos pinos é GND) |
@@ -370,6 +372,10 @@ O botão central cicla laranja → vermelho → piscando → desliga, mas o cód
 - **Bug da biblioteca:** arrays indexados pelo número da conexão estouravam com handle ≥ 4 → reinício ao desconectar. Corrigido no patch.
 - O nº de "atividades" do rádio vem de `CONFIG_BT_NIMBLE_MAX_CONNECTIONS`; com anúncio estendido, `advertiseOnDisconnect` não existe.
 - No pareamento, não entregar a identidade **do display** (senão o Android junta as duas identidades), mas aceitar a **do celular** (senão cada reconexão/reboot pede novo pareamento). **Pegadinha:** na NimBLE, `setSecurityInitKey` = chaves que o **display** distribui (`our`) e `setSecurityRespKey` = chaves que o **celular** distribui (`their`) — o contrário do que o nome sugere. **MAS** pedir a IRK do celular liga a resolução de endereço e derruba o clone da roda (apps não conectam). Conflito real: ficamos com `setSecurityInitKey(ENC|ID)` + `setSecurityRespKey(ENC)` (apps OK, controle repareia). Diagnóstico: `bonds` no Serial e `[bond] restaurados no boot: N`.
+
+**Pareamento — tiques cosméticos:** o primeiro toque pra parear o controle às vezes falha e só o segundo oferece parear; o controle pode aparecer no Android com um nome tipo "82CE"/ícone de controle. Ambos inofensivos.
+
+**Pareamento — faxina (sempre que mexer em bond/segurança):** `esquecer` no Serial; no celular, esquecer **TODAS** as entradas do display (inclusive uma possível **KSN-S16P...**, que é o resíduo que trava os apps); liga/desliga o Bluetooth do celular. Pular isso contamina o teste: um bond velho grudado no endereço da roda faz os apps conectarem e caírem no aperto de mão (nada aparece no Serial do display).
 
 **Android**
 - Guarda a lista de serviços em cache: desligar/ligar o Bluetooth (não pareado) ou esquecer e parear de novo (pareado).
