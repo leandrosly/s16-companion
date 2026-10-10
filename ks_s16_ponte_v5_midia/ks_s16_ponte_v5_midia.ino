@@ -31,6 +31,11 @@
 #include <LovyanGFX.hpp>
 #include <vector>
 #include <Preferences.h>     // guarda a configuracao na flash (sobrevive ao desligar)
+#include <ESP_I2S.h>         // audio para o piezo/alto-falante (codec ES8311)
+
+// Chave de teste: 0 desliga TODO o som (nao inicia I2S/codec/tarefa). Serve para
+// isolar se um problema vem do piezo ou de outra mudanca. 1 = som normal.
+#define USAR_SOM 1
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -54,6 +59,22 @@ static bool IGNORA_CANCELAR = true;
 // MPU-6050: acende a tela quando o pulso esta na posicao de olhar, apaga
 // quando abaixa. Comeca DESLIGADO: so vale depois de "mpu on" + "mpu gravar".
 static bool TELA_AUTO = false;
+
+// Som (piezo/alto-falante pelo codec ES8311). SOM_ON liga/desliga os bipes.
+static bool SOM_ON = true;
+
+// Pinos e estado do som (aqui no topo porque o console/buzina usam estas
+// variaveis; as FUNcoes do som ficam mais abaixo, perto do setup).
+// Pinos (lcdwiki): amplificador EN=IO1 (0=liga), MCLK 4, BCLK 5, LRCK 7,
+// IO8 = saida de audio ESP32->codec. Codec ES8311 no I2C 0x18.
+static const int SOM_AMP_EN = 1, SOM_MCLK = 4, SOM_BCLK = 5, SOM_LRCK = 7, SOM_DOUT = 8, SOM_DIN = 6;
+static const uint32_t SOM_TAXA = 32000;
+static const float    SOM_FREQ = 4000;     // ressonancia do piezo de 35 mm
+static I2SClass somI2s;
+static bool somOk = false;
+enum { SOM_NADA, SOM_BIPE, SOM_ALARME };
+static volatile int somModo = SOM_NADA;
+static volatile int somPedido = 0;         // muda a cada pedido; a tarefa reinicia o tempo
 
 // Estado e constantes do MPU (aqui no topo porque o handleTouch usa estas
 // variaveis; as FUNcoes do MPU ficam mais abaixo, perto do setup).
@@ -83,6 +104,7 @@ static OpcaoBool OPCOES_BOOL[] = {
   { "DUMP_OTHER", &DUMP_OTHER, true  },
   { "IGNORA_CANCELAR", &IGNORA_CANCELAR, true },
   { "TELA_AUTO", &TELA_AUTO, false },
+  { "SOM_ON", &SOM_ON, true },
 };
 static OpcaoTexto OPCOES_TEXTO[] = {
   { "NAME_FILTER", &NAME_FILTER, "KS" },
@@ -985,6 +1007,22 @@ static void handleSerialConsole() {
       Serial.println("Pareamentos apagados (esqueca o display no Bluetooth do celular tambem)");
       continue;
     }
+    if (nome == "bonds") {             // lista os pareamentos guardados agora
+      int nb = NimBLEDevice::getNumBonds();
+      Serial.printf("[bond] guardados agora: %d\n", nb);
+      for (int i = 0; i < nb; i++)
+        Serial.printf("[bond]   %d: %s\n", i, NimBLEDevice::getBondedAddress(i).toString().c_str());
+      continue;
+    }
+    if (nome == "som") {               // som | som bipe | som alarme | som on | som off
+      String a = String(line + 4); a.trim();
+      if (a == "bipe") somBipe();
+      else if (a == "alarme") somAlarme();
+      else if (a == "on" || a == "off") comandoConfig(String("SOM_ON ") + a);
+      else Serial.printf("som: %s | SOM_ON=%s  (use: som bipe | som alarme | som on | som off)\n",
+                         somOk ? "ok" : "sem codec", SOM_ON ? "on" : "off");
+      continue;
+    }
     if (nome == "mpu") {               // mpu | mpu gravar | mpu on | mpu off
       char* arg = strtok_r(nullptr, " ", &save);   // (v[] ja consumiu o resto como hexa; reparse aqui)
       String a = String(line + 4); a.trim();       // tudo depois de "mpu "
@@ -1501,10 +1539,109 @@ static void handleHornButton() {
     estavaApertado = apertado;
     if (apertado) {                               // so na hora de apertar
       sendKs(0x88, 0, 0, 0, 0);
+      somBipe();                                  // bipe local de confirmacao
       hornFlashUntil = millis() + 600;
       logEvent("botao BOOT: buzina");
     }
   }
+}
+
+// ================= SOM: piezo/alto-falante pelo codec ES8311 =================
+// O som vai por DOIS caminhos: config do codec por I2C (porta 0, no loop/setup,
+// como tudo que e I2C) e as amostras de audio por I2S, numa TAREFA separada
+// (que so mexe no I2S, nunca no I2C, entao nao briga com o touch/MPU).
+// (os pinos/estado do som estao la em cima, antes do handleSerialConsole que
+//  usa somOk/somBipe; aqui ficam so as funcoes)
+static bool somCodecEscr(uint8_t reg, uint8_t v) {
+  return lgfx::i2c::writeRegister8(0, 0x18, reg, v, 0, 400000).has_value();
+}
+static uint8_t somCodecLer(uint8_t reg) {
+  auto r = lgfx::i2c::readRegister8(0, 0x18, reg, 400000);
+  return r.has_value() ? r.value() : 0;
+}
+// Configura o ES8311 (escravo, MCLK=256*32k=8,192 MHz vindo do pino, I2S 16 bits).
+// Mesma sequencia do driver oficial da Espressif, adaptada no teste_piezo.
+static bool somCodecIniciar() {
+  uint8_t id = somCodecLer(0xFD);            // 0x83 = ES8311
+  if (!somCodecEscr(0x00, 0x1F)) return false;
+  delay(20);
+  somCodecEscr(0x00, 0x00); somCodecEscr(0x00, 0x80);
+  somCodecEscr(0x01, 0x3F);
+  somCodecEscr(0x02, somCodecLer(0x02) & 0x07);
+  somCodecEscr(0x03, 0x10); somCodecEscr(0x04, 0x10); somCodecEscr(0x05, 0x00);
+  somCodecEscr(0x06, (somCodecLer(0x06) & 0xC0) | 0x03);
+  somCodecEscr(0x07, somCodecLer(0x07) & 0xC0); somCodecEscr(0x08, 0xFF);
+  somCodecEscr(0x00, somCodecLer(0x00) & 0xBF);
+  somCodecEscr(0x09, 0x0C); somCodecEscr(0x0A, 0x0C);
+  somCodecEscr(0x0D, 0x01); somCodecEscr(0x0E, 0x02); somCodecEscr(0x12, 0x00);
+  somCodecEscr(0x13, 0x10); somCodecEscr(0x1C, 0x6A); somCodecEscr(0x37, 0x08);
+  somCodecEscr(0x31, somCodecLer(0x31) & ~0x60);    // tira o mudo
+  somCodecEscr(0x32, 0xCF);                         // volume ~0 dB
+  Serial.printf("som: ES8311 id 0x%02X (esperado 0x83)\n", id);
+  return true;
+}
+
+// Para um instante t (s) do modo, diz a frequencia e se o som esta ligado.
+// Devolve false quando acabou.
+static bool somPrograma(int modo, float t, float& f, bool& on) {
+  f = SOM_FREQ;
+  if (modo == SOM_BIPE) {                    // bi-bip curto
+    if (t >= 0.40f) return false;
+    on = (t < 0.12f) || (t >= 0.20f && t < 0.32f);
+    return true;
+  }
+  if (modo == SOM_ALARME) {                  // sirene subindo, 3 vezes
+    if (t >= 1.8f) return false;
+    float frac = fmodf(t, 0.6f) / 0.6f;
+    f = SOM_FREQ * (0.7f + 0.5f * frac); on = true;
+    return true;
+  }
+  return false;
+}
+
+static void somTarefa(void*) {
+  const int N = 256;
+  static int16_t buf[N * 2];
+  float fase = 0; uint32_t n = 0; int pedidoVisto = -1; bool ampLigado = false;
+  for (;;) {
+    int modo = somModo;
+    if (modo == SOM_NADA) {                  // ocioso: desliga o amplificador e descansa
+      if (ampLigado) { digitalWrite(SOM_AMP_EN, HIGH); ampLigado = false; }
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    if (!ampLigado) { digitalWrite(SOM_AMP_EN, LOW); ampLigado = true; }
+    if (somPedido != pedidoVisto) { pedidoVisto = somPedido; n = 0; }
+    for (int i = 0; i < N; i++) {
+      float f = SOM_FREQ; bool on = false;
+      if (!somPrograma(modo, n / (float)SOM_TAXA, f, on)) { somModo = SOM_NADA; on = false; }
+      int16_t v = 0;
+      if (on) { fase += f / SOM_TAXA; if (fase >= 1) fase -= 1; v = (fase < 0.5f) ? 22000 : -22000; }
+      buf[2 * i] = buf[2 * i + 1] = v;
+      n++;
+    }
+    somI2s.write((uint8_t*)buf, sizeof(buf));   // espera espaco no DMA: isso da o ritmo
+  }
+}
+
+static void somTocar(int modo) { if (somOk && SOM_ON) { somModo = modo; somPedido++; } }
+static void somBipe()   { somTocar(SOM_BIPE); }
+static void somAlarme() { somTocar(SOM_ALARME); }
+
+static void somSetup() {
+#if !USAR_SOM
+  Serial.println("som: DESLIGADO (USAR_SOM=0)");
+  return;                      // nao inicia I2S, codec nem a tarefa
+#endif
+  pinMode(SOM_AMP_EN, OUTPUT);
+  digitalWrite(SOM_AMP_EN, HIGH);            // amplificador desligado ate tocar algo
+  somI2s.setPins(SOM_BCLK, SOM_LRCK, SOM_DOUT, SOM_DIN, SOM_MCLK);
+  if (!somI2s.begin(I2S_MODE_STD, SOM_TAXA, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO)) {
+    Serial.println("som: ERRO ao iniciar o I2S"); return;
+  }
+  somOk = somCodecIniciar();
+  if (somOk) xTaskCreatePinnedToCore(somTarefa, "som", 4096, nullptr, 4, nullptr, 1);
+  Serial.printf("som: %s\n", somOk ? "ok" : "NAO RESPONDE");
 }
 
 // ================= MPU-6050: acender a tela pela posicao do pulso =================
@@ -1584,6 +1721,7 @@ void setup() {
   tft.setRotation(0);          // retrato, 240x320 (USB-C embaixo; mude para 2 para inverter)
   tft.setBrightness(200);
   mpuSetup();                  // depois do tft.init(): a porta I2C 0 ja esta aberta
+  somSetup();                  // codec ES8311 (I2C) + I2S + tarefa de som
   spr.setPsram(true);
   spr.setColorDepth(16);
   if (!spr.createSprite(240, 320)) Serial.println("ERRO: sem memoria para o sprite (PSRAM ligada?)");
@@ -1620,14 +1758,28 @@ void setup() {
     // Pareamento "so confirmar" (sem PIN), com bonding (o celular lembra do display)
     NimBLEDevice::setSecurityAuth(true, false, true);
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
-    // Chaves que o DISPLAY entrega (resp): so a de criptografia. Se entregasse tambem a
-    // "identidade" (endereco publico do ESP32 = o da identidade da roda), o Android
-    // juntaria as duas identidades num aparelho so.
-    NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC);
-    // Chaves que o CELULAR entrega (init): criptografia E identidade. A identidade (IRK)
-    // permite reconhecer o celular quando ele volta com outro endereco "disfarcado"
-    // (privacidade do Android) - sem ela, cada reconexao pedia um novo pareamento.
+    // ATENCAO ao nome enganoso da NimBLE:
+    //   setSecurityInitKey -> sm_our_key_dist    = chaves que O DISPLAY distribui
+    //   setSecurityRespKey -> sm_their_key_dist  = chaves que O CELULAR distribui
+    //
+    // DECISAO (ver README): voltamos a NAO pedir a identidade (IRK) do celular.
+    // Pedir a IRK conserta o re-pareamento do "S16 Controle", MAS liga a resolucao
+    // de endereco no controlador, e isso QUEBRA as conexoes na identidade da roda
+    // (os apps nao conectam / GATT vazio no nRF). Entre "controle de midia nao
+    // repareia" e "os apps funcionam", os apps ganham. O re-pareamento do controle
+    // fica como limitacao conhecida ate um conserto dedicado que nao ligue a resolucao.
     NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
+    NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC);
+  }
+
+  // DIAGNOSTICO (pareamento): quantos bonds foram restaurados da memoria no boot.
+  // Se parear, religar e aqui vier 0 -> problema e PERSISTIR os bonds.
+  // Se vier 1 (ou mais) -> bonds persistem; o problema e RECONHECER o celular que volta.
+  {
+    int nb = NimBLEDevice::getNumBonds();
+    Serial.printf("[bond] restaurados no boot: %d\n", nb);
+    for (int i = 0; i < nb; i++)
+      Serial.printf("[bond]   %d: %s\n", i, NimBLEDevice::getBondedAddress(i).toString().c_str());
   }
 
   server = NimBLEDevice::createServer();
