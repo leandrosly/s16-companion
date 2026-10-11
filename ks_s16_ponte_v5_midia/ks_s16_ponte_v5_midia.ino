@@ -63,15 +63,29 @@ static bool TELA_AUTO = false;
 // Som (piezo/alto-falante pelo codec ES8311). SOM_ON liga/desliga os bipes.
 static bool SOM_ON = true;
 
+// Mochila Dream: manter conectado automaticamente (conexao bloqueante com
+// timeout curto; a assincrona e que estourava o buffer). Salvo na config.
+static bool DREAM_AUTO = true;
+
 // Mochila (Dream): estado aqui no topo porque o console usa.
 static const char* DREAM_MAC = "2b:80:04:13:0e:4d";
 static NimBLEUUID DREAM_SVC((uint16_t)0xFFD5);
 static NimBLEUUID DREAM_WRCHR((uint16_t)0xFFD9);
 static NimBLEClient* dreamCli = nullptr;
 static NimBLERemoteCharacteristic* dreamWr = nullptr;
-static bool dreamQuer = false;          // o usuario pediu para manter conectado
+static bool dreamQuer = false;          // deve manter conectado (vem de DREAM_AUTO)
 static bool dreamConectado = false;
+static bool dreamConectando = false;
 static uint32_t dreamProxTentativa = 0;
+static int      dreamFalhas = 0;        // tentativas seguidas que falharam
+// estado desejado das luzes da mochila (a tela mexe nisto; aplicado ao conectar)
+static bool    dreamLigado = false;
+static uint8_t dreamModo = 0;           // 0 = cor fixa, 1 = efeito
+static uint8_t dreamR = 255, dreamG = 60, dreamB = 0;
+static uint8_t dreamBrilho = 255;
+static uint8_t dreamEf = 0, dreamVel = 0x40;
+static bool    dreamDemo = false;
+static bool    dreamAplicarPend = false;   // aplicar o estado assim que (re)conectar
 
 // 433 MHz (piscas): constantes/estado aqui no topo porque o console usa.
 static const int      TX433_PIN = 21;
@@ -134,6 +148,7 @@ static OpcaoBool OPCOES_BOOL[] = {
   { "IGNORA_CANCELAR", &IGNORA_CANCELAR, true },
   { "TELA_AUTO", &TELA_AUTO, false },
   { "SOM_ON", &SOM_ON, true },
+  { "DREAM_AUTO", &DREAM_AUTO, true },
 };
 static OpcaoTexto OPCOES_TEXTO[] = {
   { "NAME_FILTER", &NAME_FILTER, "KS" },
@@ -314,7 +329,7 @@ struct BmsPack {
   uint32_t lastUpdate = 0;
 } bms[2];
 
-static char statusL1[32] = "KS-S16 ponte v4";
+static char statusL1[32] = "KS-S16 ponte v5";
 static char statusL2[32] = "Iniciando...";
 
 // ================= Logs no cartao SD =================
@@ -1046,14 +1061,14 @@ static void handleSerialConsole() {
     if (nome == "dream") {             // dream on|off|liga|desliga|cor RR GG BB|ef N
       String sub = String(line + 6); sub.trim();   // 1a palavra depois de "dream "
       // (os numeros "RR GG BB" / "N" ja estao em v[1..] parseados como hexa)
-      if (sub == "on")       { dreamQuer = true; dreamProxTentativa = 0; Serial.println("[dream] vou manter conectado"); }
-      else if (sub == "off") { dreamQuer = false; if (dreamCli && dreamCli->isConnected()) dreamCli->disconnect(); dreamConectado = false; Serial.println("[dream] desconectado"); }
-      else if (sub == "liga")    dreamLiga(true);
-      else if (sub == "desliga") dreamLiga(false);
-      else if (sub == "cor" && cnt >= 4)  dreamCor(v[1], v[2], v[3]);   // v[0]="cor"? nao: v[] sao hexas; ver abaixo
-      else if (sub == "ef"  && cnt >= 2)  dreamEfeito(v[1], 0x40, 0xFF);
+      if (sub == "on")       dreamSetAuto(true);
+      else if (sub == "off") dreamSetAuto(false);
+      else if (sub == "liga")    dreamSetLiga(true);
+      else if (sub == "desliga") dreamSetLiga(false);
+      else if (sub == "cor" && cnt >= 4)  dreamSetCor(v[1], v[2], v[3]);   // v[1..3] = RR GG BB
+      else if (sub == "ef"  && cnt >= 2)  dreamSetEfeito(v[1]);
       else Serial.printf("[dream] %s  (use: dream on|off|liga|desliga|cor RR GG BB|ef N)\n",
-                         dreamConectado ? "conectado" : dreamQuer ? "tentando" : "off");
+                         dreamConectado ? "conectado" : dreamConectando ? "conectando" : dreamQuer ? "tentando" : "off");
       continue;
     }
     if (nome == "433") {               // 433 e|d|x|l|v|p (esq, dir, desliga, laranja, verm, piscando)
@@ -1203,7 +1218,7 @@ static uint16_t pwmColor(int p) {
 }
 
 // Telas: 0 = BMS (esquerda), 1 = principal, 2 = controles (direita)
-static const int NUM_PAGES = 4;
+static const int NUM_PAGES = 5;
 static int page = 1;
 static uint32_t hornFlashUntil = 0;     // mostra "BUZINA" na barra por um instante
 
@@ -1224,11 +1239,24 @@ static void drawTopBar() {
   spr.fillCircle(80, 15, 3, cn);
   spr.drawFastVLine(83, 4, 12, cn);
   spr.drawLine(83, 4, 87, 7, cn);
-  if (millis() < hornFlashUntil) spr.fillCircle(100, 11, 5, TFT_YELLOW);   // buzina
+  if (millis() < hornFlashUntil) spr.fillCircle(122, 11, 5, TFT_YELLOW);   // buzina
   if (wd.cooling > 0) { spr.setTextColor(TFT_ORANGE); spr.drawString("FAN", 110, 11); }
-  // bolinhas indicando a tela atual
+  // mochila (Dream): 3 bolinhas em triangulo. RGB = conectado; piscando = tentando; cinza = desligado
+  {
+    int dcx = 100;
+    bool tentando = dreamQuer && !dreamConectado;
+    bool piscaOn = (millis() / 400) % 2;
+    uint16_t cr, cg, cb;
+    if (dreamConectado)      { cr = TFT_RED; cg = TFT_GREEN; cb = TFT_BLUE; }
+    else if (tentando)       { cr = cg = cb = piscaOn ? TFT_YELLOW : 0x18E3; }   // pisca (0x18E3 = fundo)
+    else                     { cr = cg = cb = COL_DIM; }
+    spr.fillCircle(dcx, 7, 2, cr);
+    spr.fillCircle(dcx - 4, 14, 2, cg);
+    spr.fillCircle(dcx + 4, 14, 2, cb);
+  }
+  // bolinhas da tela: centradas entre o icone do Dream (~126) e o relogio
   for (int i = 0; i < NUM_PAGES; i++) {
-    int x = 148 + i * 12;
+    int x = 140 + i * 9;
     if (i == page) spr.fillCircle(x, 11, 3, TFT_WHITE); else spr.drawCircle(x, 11, 3, COL_DIM);
   }
   spr.setTextDatum(middle_right);
@@ -1240,7 +1268,7 @@ static void drawTopBar() {
     spr.setTextColor(TFT_WHITE);
     spr.drawString(buf, 236, 11);
   }
-  if (rideLogging) spr.fillCircle(184, 11, 5, TFT_RED);   // gravando
+  if (rideLogging) spr.fillCircle(192, 11, 5, TFT_RED);   // gravando
 }
 
 static void drawCell(int x, int y, int w, int h, const char* label, const char* value) {
@@ -1594,10 +1622,117 @@ static void tocarPiscas(int x, int y) {
     if (x >= PM_X[k] && x < PM_X[k] + PM_W && y >= PB_Y && y < PB_Y + PB_H) { piscaToggle(k + 1); return; }
 }
 
+// ---------- Tela 4: Mochila (Dream) ----------
+static const uint16_t DREAM_COR[6] = { TFT_RED, TFT_GREEN, TFT_BLUE, 0xFD20, TFT_CYAN, TFT_WHITE };
+static const uint8_t  DREAM_RGB[6][3] = { {255,0,0},{0,255,0},{0,0,255},{255,180,0},{0,255,255},{255,255,255} };
+static const int DRX[3] = { 6, 84, 162 }, DR_W = 72;
+static const int DCON_X = 130, DCON_Y = 24, DCON_W = 106, DCON_H = 22;  // botao CONECTAR/DESCONECTAR
+static const int DON_Y = 52, DON_H = 30;            // liga/desliga (luz)
+static const int DC_Y0 = 88, DC_H = 28, DC_DY = 32; // 2 linhas de cores
+static const int DBRI_Y = 158, DEF_Y = 196, DVEL_Y = 234, DBAR_H = 30;
+static const int DTR_X1 = 92, DTR_X2 = 232;         // trilho dos sliders
+
+static void drawSliderSpr(int y, const char* nome, int val, int vmax) {
+  spr.setFont(&fonts::Font2); spr.setTextDatum(middle_left);
+  spr.setTextColor(COL_DIM); spr.drawString(nome, 6, y + DBAR_H / 2);
+  int cy = y + DBAR_H / 2;
+  int xv = DTR_X1 + (DTR_X2 - DTR_X1) * constrain(val, 0, vmax) / vmax;
+  spr.fillRoundRect(DTR_X1, cy - 3, DTR_X2 - DTR_X1, 6, 3, 0x4208);
+  spr.fillRoundRect(DTR_X1, cy - 3, xv - DTR_X1, 6, 3, TFT_CYAN);
+  spr.fillCircle(xv, cy, 7, TFT_WHITE);
+}
+
+static void drawDream() {
+  spr.fillScreen(TFT_BLACK);
+  drawTopBar();
+  const char* st = dreamConectado ? "conectada" : dreamQuer ? "procurando" : "desligada";
+  spr.setFont(&fonts::Font2); spr.setTextDatum(middle_left);
+  spr.setTextColor(dreamConectado ? TFT_GREEN : dreamQuer ? TFT_YELLOW : COL_DIM);
+  spr.drawString(st, 6, 34);
+  // botao conectar/desconectar (salvo)
+  spr.fillRoundRect(DCON_X, DCON_Y, DCON_W, DCON_H, 6, dreamQuer ? TFT_DARKGREEN : 0x4208);
+  spr.setTextDatum(middle_center); spr.setTextColor(TFT_WHITE);
+  spr.drawString(dreamQuer ? "DESCONECTAR" : "CONECTAR", DCON_X + DCON_W / 2, DCON_Y + DCON_H / 2 - 1);
+
+  spr.setTextDatum(middle_center);
+  spr.fillRoundRect(DRX[0], DON_Y, DR_W + 30, DON_H, 7, dreamLigado ? TFT_DARKGREEN : 0x2124);
+  spr.setTextColor(TFT_WHITE); spr.drawString("LIGA", DRX[0] + (DR_W + 30) / 2, DON_Y + DON_H / 2 - 1);
+  spr.fillRoundRect(124, DON_Y, DR_W + 30, DON_H, 7, !dreamLigado ? TFT_MAROON : 0x2124);
+  spr.drawString("DESLIGA", 124 + (DR_W + 30) / 2, DON_Y + DON_H / 2 - 1);
+
+  for (int i = 0; i < 6; i++) {
+    int x = DRX[i % 3], y = DC_Y0 + (i / 3) * DC_DY;
+    bool sel = (dreamModo == 0 && dreamLigado && dreamR == DREAM_RGB[i][0] && dreamG == DREAM_RGB[i][1] && dreamB == DREAM_RGB[i][2]);
+    spr.fillRoundRect(x, y, DR_W, DC_H, 6, sel ? DREAM_COR[i] : 0x2124);
+    spr.drawRoundRect(x, y, DR_W, DC_H, 6, DREAM_COR[i]);
+  }
+
+  drawSliderSpr(DBRI_Y, "brilho", dreamBrilho, 255);
+
+  // efeito:  [-] [+]   efeito N        [DEMO]
+  int ey = DEF_Y + DBAR_H / 2 - 1;
+  spr.fillRoundRect(6,  DEF_Y, 40, DBAR_H, 6, TFT_NAVY); spr.setTextColor(TFT_WHITE);
+  spr.drawString("-", 26, ey);
+  spr.fillRoundRect(50, DEF_Y, 40, DBAR_H, 6, TFT_NAVY);
+  spr.drawString("+", 70, ey);
+  spr.setTextDatum(middle_left);
+  spr.setTextColor(dreamModo == 1 && dreamLigado ? TFT_YELLOW : COL_DIM);
+  char eb[16]; snprintf(eb, sizeof(eb), "efeito %d", dreamEf);
+  spr.drawString(eb, 98, ey);
+  spr.setTextDatum(middle_center);
+  spr.fillRoundRect(180, DEF_Y, 54, DBAR_H, 6, dreamDemo ? TFT_MAROON : TFT_PURPLE);
+  spr.setTextColor(TFT_WHITE); spr.drawString(dreamDemo ? "parar" : "demo", 207, ey);
+
+  drawSliderSpr(DVEL_Y, "veloc", dreamVel, 255);
+  spr.pushSprite(0, 0);
+}
+
+static void tocarDream(int x, int y) {
+  if (x >= DCON_X && y >= DCON_Y && y < DCON_Y + DCON_H) { dreamSetAuto(!dreamQuer); return; }
+  if (y >= DON_Y && y < DON_Y + DON_H) { dreamSetLiga(x < 120); return; }
+  for (int i = 0; i < 6; i++) {
+    int bx = DRX[i % 3], by = DC_Y0 + (i / 3) * DC_DY;
+    if (x >= bx && x < bx + DR_W && y >= by && y < by + DC_H) { dreamSetCor(DREAM_RGB[i][0], DREAM_RGB[i][1], DREAM_RGB[i][2]); return; }
+  }
+  if (y >= DBRI_Y && y < DBRI_Y + DBAR_H && x >= DTR_X1 - 8) {
+    dreamBrilho = constrain((x - DTR_X1) * 255 / (DTR_X2 - DTR_X1), 0, 255); dreamReaplicar(); return;
+  }
+  if (y >= DVEL_Y && y < DVEL_Y + DBAR_H && x >= DTR_X1 - 8) {
+    dreamVel = constrain((x - DTR_X1) * 255 / (DTR_X2 - DTR_X1), 1, 255);
+    if (dreamModo == 1) dreamEnviarEfeito();
+    return;
+  }
+  if (y >= DEF_Y && y < DEF_Y + DBAR_H) {
+    if (x >= 6 && x < 46) dreamSetEfeito(dreamEf == 0 ? 0 : dreamEf - 1);
+    else if (x >= 50 && x < 90) dreamSetEfeito(dreamEf + 1);
+    else if (x >= 180) dreamDemo = !dreamDemo;
+    return;
+  }
+}
+
+// --- Sliders por ARRASTO (chamados pelo handleTouch) ---
+// Qual slider esta sob (x,y)? 1 = brilho, 2 = velocidade, 0 = nenhum.
+static int dreamHitSlider(int x, int y) {
+  if (x < DTR_X1 - 12) return 0;
+  if (y >= DBRI_Y && y < DBRI_Y + DBAR_H) return 1;
+  if (y >= DVEL_Y && y < DVEL_Y + DBAR_H) return 2;
+  return 0;
+}
+static void dreamArrastaSlider(int which, int x) {
+  int v = constrain((x - DTR_X1) * 255 / (DTR_X2 - DTR_X1), which == 2 ? 1 : 0, 255);
+  if (which == 1) dreamBrilho = v; else dreamVel = v;   // move a bolinha JA (a tela redesenha a ~10 q/s)
+  // mas so manda pro modulo de vez em quando: a cada quadro floda o BLE da mochila e o arrasto "morre"
+  static uint32_t ult = 0;
+  if (millis() - ult < 80) return;
+  ult = millis();
+  if (which == 1) dreamReaplicar(); else if (dreamModo == 1) dreamEnviarEfeito();
+}
+
 static void drawPage() {
   if (page == 0) drawBms();
   else if (page == 2) drawControls();
   else if (page == 3) drawPiscas();
+  else if (page == 4) drawDream();
   else drawData();
 }
 
@@ -1605,6 +1740,7 @@ static void drawPage() {
 static void handleTouch() {
   static bool dedo = false;
   static bool acordouComToque = false;            // o toque que acendeu a tela nao aperta botao
+  static int arrastaSlider = 0;                   // slider do Dream sendo arrastado (1/2) ou 0
   static int x0, y0, xu, yu;
   static uint32_t t0;
   int32_t x, y;
@@ -1614,13 +1750,20 @@ static void handleTouch() {
       dedo = true; x0 = x; y0 = y; t0 = millis();
       acordouComToque = !telaAcesa;                // estava apagada? este toque so acende
       if (!telaAcesa) { telaAcesa = true; tft.setBrightness(MPU_BRILHO); }
+      // comecou em cima de um slider do Dream? entao e arrasto, nao swipe de tela
+      arrastaSlider = (!acordouComToque && page == 4) ? dreamHitSlider(x, y) : 0;
     }
     xu = x; yu = y;
+    if (arrastaSlider) dreamArrastaSlider(arrastaSlider, x);   // arrasto ao vivo
     return;
   }
   if (!dedo) return;
   dedo = false;                                   // o dedo acabou de soltar
-  if (acordouComToque) { acordouComToque = false; return; }   // so acendeu, ignora o gesto
+  if (acordouComToque) { acordouComToque = false; arrastaSlider = 0; return; }
+  if (arrastaSlider) {                                 // era arrasto de slider: manda o valor final e sai
+    if (arrastaSlider == 1) dreamReaplicar(); else if (dreamModo == 1) dreamEnviarEfeito();
+    arrastaSlider = 0; return;                         // nem swipe nem toque
+  }
   int dx = xu - x0, dy = yu - y0;
   if (abs(dx) > 60 && abs(dx) > abs(dy)) {        // deslizou na horizontal
     if (dx < 0 && page < NUM_PAGES - 1) page++;   // para a esquerda: tela da direita
@@ -1629,6 +1772,7 @@ static void handleTouch() {
   } else if (abs(dx) < 15 && abs(dy) < 15 && millis() - t0 < 600) {   // foi um toque
     if (page == 2) tocarControles(x0, y0);
     else if (page == 3) tocarPiscas(x0, y0);
+    else if (page == 4) tocarDream(x0, y0);
   }
 }
 
@@ -1656,44 +1800,88 @@ static void handleHornButton() {
 // Endereco fixo (do nRF): 2B:80:04:13:0E:4D. Conexao DIRETA pelo endereco, sem
 // mexer no scanner da roda. Escrita em FFD9 (dentro do servico FFD5), sem resposta.
 // (estado la em cima, antes do console; aqui so as funcoes)
-static bool dreamConectar() {
-  if (!dreamCli) dreamCli = NimBLEDevice::createClient();
-  // tenta PUBLIC e depois RANDOM (nao sabemos ao certo o tipo do endereco)
-  const uint8_t tipos[2] = { BLE_ADDR_PUBLIC, BLE_ADDR_RANDOM };
-  for (int t = 0; t < 2; t++) {
-    NimBLEAddress a(std::string(DREAM_MAC), tipos[t]);
-    Serial.printf("[dream] conectando %s (tipo %d)...\n", DREAM_MAC, tipos[t]);
-    if (!dreamCli->connect(a)) continue;
-    NimBLERemoteService* svc = dreamCli->getService(DREAM_SVC);
-    if (!svc) { dreamCli->disconnect(); continue; }
-    dreamWr = svc->getCharacteristic(DREAM_WRCHR);
-    if (!dreamWr) { dreamCli->disconnect(); continue; }
-    dreamConectado = true;
-    Serial.println("[dream] conectado (FFD9 ok)");
-    return true;
-  }
-  Serial.println("[dream] NAO conectou");
-  return false;
-}
+// Envio bruto (so quando conectado). A tarefa do NimBLE e a do loop nao
+// escrevem juntas: tudo sai do loop/console, entao e seguro.
 static void dreamEnviar(const uint8_t* d, size_t n) {
-  if (!dreamConectado || !dreamWr) { Serial.println("[dream] nao conectado"); return; }
-  for (int r = 0; r < 2; r++) { dreamWr->writeValue(d, n, false); delay(8); }
+  if (!dreamConectado || !dreamWr) return;
+  for (int r = 0; r < 2; r++) { dreamWr->writeValue(d, n, false); delay(6); }
 }
-static void dreamLiga(bool on)  { uint8_t c[3] = { 0xCC, on ? (uint8_t)0x23 : (uint8_t)0x24, 0x33 }; dreamEnviar(c, 3); }
-static void dreamCor(uint8_t r, uint8_t g, uint8_t b) { uint8_t c[7] = { 0x56, r, g, b, 0x00, 0xF0, 0xAA }; dreamEnviar(c, 7); }
-static void dreamEfeito(uint8_t ef, uint8_t vel, uint8_t bri) {
-  uint8_t c[7] = { 0x9E, 0x00, ef, vel, bri < 0x19 ? (uint8_t)0x19 : bri, 0x00, 0xE9 }; dreamEnviar(c, 7);
+static void dreamEnviarLiga(bool on) { uint8_t c[3] = { 0xCC, on ? (uint8_t)0x23 : (uint8_t)0x24, 0x33 }; dreamEnviar(c, 3); }
+static void dreamEnviarCor(uint8_t r, uint8_t g, uint8_t b) {
+  uint8_t br = dreamBrilho;                       // escala a cor pelo brilho
+  uint8_t c[7] = { 0x56, (uint8_t)(r*br/255), (uint8_t)(g*br/255), (uint8_t)(b*br/255), 0x00, 0xF0, 0xAA };
+  dreamEnviar(c, 7);
 }
-// Gestao da conexao (chamada no loop): conecta quando pedido, detecta queda.
-// Atencao: dreamConectar() BLOQUEIA ate conectar/timeout — ok para teste manual.
-static void dreamLoop() {
-  if (dreamQuer && !dreamConectado && millis() > dreamProxTentativa) {
-    dreamProxTentativa = millis() + 4000;
-    dreamConectar();
+static void dreamEnviarEfeito() {
+  uint8_t bri = dreamBrilho < 0x19 ? 0x19 : dreamBrilho;
+  uint8_t c[7] = { 0x9E, 0x00, dreamEf, dreamVel, bri, 0x00, 0xE9 };
+  dreamEnviar(c, 7);
+}
+// Aplica o estado atual (usado ao conectar/reconectar, pra mochila casar com a tela)
+static void dreamAplicar() {
+  dreamEnviarLiga(dreamLigado);
+  if (!dreamLigado) return;
+  if (dreamModo == 0) dreamEnviarCor(dreamR, dreamG, dreamB);
+  else dreamEnviarEfeito();
+}
+// --- API de alto nivel (mexem no estado local E mandam, se conectado) ---
+static void dreamSetLiga(bool on) { dreamLigado = on; if (!on) dreamDemo = false; dreamEnviarLiga(on); if (on) dreamAplicar(); }
+static void dreamSetCor(uint8_t r, uint8_t g, uint8_t b) {
+  dreamModo = 0; dreamR = r; dreamG = g; dreamB = b; dreamLigado = true;
+  dreamEnviarLiga(true); dreamEnviarCor(r, g, b);
+}
+static void dreamSetEfeito(uint8_t ef) { dreamModo = 1; dreamEf = ef; dreamLigado = true; dreamEnviarLiga(true); dreamEnviarEfeito(); }
+
+// --- Conexao ASSINCRONA (nao bloqueia a ponte) ---
+// So precisamos saber quando a mochila CAI (a conexao em si e feita, bloqueante,
+// no dreamLoop). Ao cair, marca desconectado e espera antes de reconectar.
+class DreamCB : public NimBLEClientCallbacks {
+  void onDisconnect(NimBLEClient*, int reason) override {
+    dreamConectado = false; dreamProxTentativa = millis() + 4000;
+    Serial.printf("[dream] caiu (%d)\n", reason);
   }
-  if (dreamConectado && dreamCli && !dreamCli->isConnected()) {
-    dreamConectado = false;
-    Serial.println("[dream] caiu");
+} dreamCB;
+
+// Liga/desliga o "manter conectado" e SALVA (botao da tela e 'dream on/off').
+static void dreamSetAuto(bool on) {
+  DREAM_AUTO = on; dreamQuer = on;
+  prefs.begin("s16cfg", false); prefs.putBool("DREAM_AUTO", on); prefs.end();
+  if (!on) { if (dreamCli && dreamCli->isConnected()) dreamCli->disconnect(); dreamConectado = false; }
+  else dreamProxTentativa = 0;
+  Serial.printf("[dream] manter conectado: %s\n", on ? "SIM" : "NAO");
+}
+static void dreamReaplicar() {   // re-manda o modo atual (apos mexer brilho/cor/vel)
+  if (!dreamLigado) return;
+  if (dreamModo == 0) dreamEnviarCor(dreamR, dreamG, dreamB); else dreamEnviarEfeito();
+}
+static void dreamLoop() {
+  // aplica o estado desejado uma vez, ja no contexto do loop (nao no callback do NimBLE)
+  if (dreamConectado && dreamAplicarPend) { dreamAplicarPend = false; dreamAplicar(); }
+
+  // DEMO: percorre os efeitos sozinho
+  static uint32_t tDemo = 0;
+  if (dreamDemo && dreamConectado && dreamLigado && millis() - tDemo > 1500) { tDemo = millis(); dreamSetEfeito(dreamEf + 1); }
+
+  // A RODA VEM SEMPRE PRIMEIRO: so tenta a mochila com a roda ja conectada,
+  // para o scan/conexao da roda nunca disputar o radio com a mochila no boot.
+  // A RODA VEM SEMPRE PRIMEIRO
+  bool rodaOk = client && client->isConnected();
+  if (!rodaOk || !dreamQuer || dreamConectado || millis() < dreamProxTentativa) return;
+
+  // Conexao BLOQUEANTE (a assincrona estourava o buffer do radio - obrigado Leandro).
+  // Com timeout curto, se o modulo estiver ausente a tentativa custa ~2,5 s em vez
+  // de travar; tenta de novo so a cada 15 s. Com o modulo presente, conecta rapido.
+  if (!dreamCli) { dreamCli = NimBLEDevice::createClient(); dreamCli->setClientCallbacks(&dreamCB, false); }
+  dreamCli->setConnectTimeout(2500);
+  NimBLEAddress a(std::string(DREAM_MAC), BLE_ADDR_PUBLIC);   // provado: tipo PUBLIC
+  if (dreamCli->connect(a)) {
+    NimBLERemoteService* svc = dreamCli->getService(DREAM_SVC);
+    dreamWr = svc ? svc->getCharacteristic(DREAM_WRCHR) : nullptr;
+    if (dreamWr) { dreamConectado = true; dreamFalhas = 0; dreamAplicarPend = true; Serial.println("[dream] conectado (FFD9 ok)"); }
+    else { dreamCli->disconnect(); dreamProxTentativa = millis() + 15000; }
+  } else {
+    dreamProxTentativa = millis() + 15000;         // ausente: espera mais antes de tentar de novo
+    Serial.println("[dream] nao encontrado (modulo desligado/longe); nova tentativa em 15 s");
   }
 }
 
@@ -1953,11 +2141,12 @@ void setup() {
   mpuSetup();                  // depois do tft.init(): a porta I2C 0 ja esta aberta
   somSetup();                  // codec ES8311 (I2C) + I2S + tarefa de som
   tx433Setup();                // transmissor 433 MHz (RMT no IO21)
+  dreamQuer = DREAM_AUTO;      // manter a mochila conectada automaticamente
   spr.setPsram(true);
   spr.setColorDepth(16);
   if (!spr.createSprite(240, 320)) Serial.println("ERRO: sem memoria para o sprite (PSRAM ligada?)");
   Serial.printf("PSRAM: %u bytes\n", ESP.getPsramSize());
-  statusMsg("KS-S16 ponte v4", "Escaneando...");
+  statusMsg("KS-S16 ponte v5", "Escaneando...");
 
   pinMode(PIN_BUZINA, INPUT_PULLUP);
   logQ = xQueueCreate(16, sizeof(LogEvt));
@@ -2041,7 +2230,7 @@ void loop() {
 
   if (needScan) {
     needScan = false;
-    statusMsg("KS-S16 ponte v4", "Escaneando...");
+    statusMsg("KS-S16 ponte v5", "Escaneando...");
     startScan();
   }
 
