@@ -54,6 +54,7 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 - **MPU na ponte (parte 1):** a tela acende/apaga pela posição do pulso. Começa desligado; ative pelo Serial: `mpu on` depois `mpu gravar` (na posição de olhar). Comandos: `mpu` (status), `mpu on`/`mpu off`, `mpu gravar`. O deep sleep ("roda sumiu") fica para o marco de energia. Tocar na tela sempre acende.
 - **Mochila/Dream na ponte (parte 4, Etapa 1):** o display vira **2º cliente BLE** (conecta no Dream, endereço fixo `2B:80:04:13:0E:4D`, tipo PUBLIC com fallback RANDOM), **sob comando** pelo Serial (`dream on`/`off`/`liga`/`desliga`/`cor RR GG BB`/`ef N`), só para provar coexistência com roda+apps. **Coexistência PROVADA** com `MAX_CONNECTIONS` ainda em **6**: roda + 3 apps + controle de mídia + cliente do Dream juntos, ninguém caiu (o bump para 7 era precaução, não foi preciso). **Etapa 2a:** conexão **assíncrona** + **5ª tela "Mochila"** (liga/cores/brilho/efeito/DEMO/veloc), estado reaplicado ao (re)conectar, Dream só conecta **depois da roda**. Serial: `dream on|off|liga|desliga|cor RR GG BB|ef N`.
 - **Dream: NÃO era limite de buffer.** O flood `Failed to allocate buffer` + `falhou (13)` vinha da conexão **assíncrona** (`connect(a,true,true)`), não de falta de recurso — a conexão **bloqueante** funciona com tudo conectado (roda+apps+controle+Dream), provado na Etapa 1. Solução: conexão **bloqueante** com `setConnectTimeout(2500)` (ausente = ~2,5 s de tentativa, não trava; nova tentativa a cada 15 s) e só depois da roda. `DREAM_AUTO` volta a **true**. Falta a **luz de freio** (Etapa 2b).
+- **Mochila na barra + botão conectar:** ícone de 3 bolinhas em triângulo RGB no topo (conectado=RGB, tentando=pisca amarelo, desligado=cinza). Botão **CONECTAR/DESCONECTAR** na tela Mochila (= `dream on`/`off`, salvo em `DREAM_AUTO`): desconectar não tenta nada (sem travadinha); conectar tenta a cada 15 s se o módulo some.
 - **433/piscas na ponte (parte 3 + tela):** transmissor STX882 no IO21 (RMT, independente de BLE/I2C). **Piscas = lanterninhas tipo bike** (par no capacete + par na traseira do mono), controladas pelo 433 — não confundir com o módulo iFlight/Dream (BLE). Tela "Piscas / Luz" (4ª tela, deslize após controles): escolhe o modo parado (apagado/laranja/vermelho/piscando) e os piscas ESQ/DIR. **Botões físicos IO2 (esq) / IO3 (dir)** ao GND. Lógica: apertar o pisca liga; apertar de novo **volta ao modo base** (não manda "desligar"), então se estava vermelho volta a vermelho. `luz_base` salvo na flash. Serial: `433 e|d` (pisca, toggle), `433 x|l|v|p` (modo base). Luz de freio automática (vermelho na frenagem) entra depois.
 - **Som na ponte (parte 2):** codec ES8311 (config por I2C no `loop`/`setup`) + I2S numa **tarefa separada** (só mexe no I2S, não briga com o touch/MPU). Bipe de confirmação ao apertar a buzina (BOOT). Comandos Serial: `som bipe`, `som alarme`, `som on`/`som off`. `SOM_ON` liga/desliga (salvo). Frequência fixa em 4 kHz (ressonância do piezo de 35 mm). Alarmes de PWM entram depois, usando `somAlarme()`.
 - Buzina no botão BOOT e na tela; farol (liga/desliga/auto), LEDs, volume da roda.
@@ -357,6 +358,26 @@ Capturado com `captura_433` v2 (SRX882S no C3). Quadro de **40 bits** (5 bytes, 
 
 O botão central cicla laranja → vermelho → piscando → desliga, mas o código de cada modo é diferente: o display pode escolher o modo direto. A rc-switch não decodifica (máx. 32 bits). Transmissão: `teste_tx433` (STX882 no IO21, pelo periférico RMT).
 
+### Controle da buzina sem fio (433,92 MHz)
+
+Capturado com `captura_433` (11/10/2026), 2 apertos por botão — **código fixo** (os dois apertos são idênticos). Mesma codificação dos piscas (T ≈ 318 µs; bit 1 = longo ~910 + curto ~350, bit 0 = curto ~350 + longo ~910), mas quadro de **32 bits** (4 bytes, MSB primeiro) + 1 pulso de parada + ~1,2 ms de intervalo entre repetições.
+
+| | |
+|---|---|
+| Quadro | `00 9F 1C [cmd]` (00 9F 1C = identidade deste controle) |
+
+| cmd | Botão |
+|---|---|
+| `AA` | buzina |
+| `CC` | volume − |
+| `99` | volume + |
+| `55` | liga (alarme de movimento) |
+| `33` | desliga (alarme de movimento) |
+
+Curiosidade: cada cmd é um nibble repetido (A·A, C·C, 9·9, 5·5, 3·3). Obs.: o detector automático do `captura_433` confundiu o intervalo de ~1226 µs com o "longo"; a decodificação acima foi feita separando as repetições por esse intervalo.
+
+⚠️ **A própria buzina obedece a este controle.** Se ele virar "botões do display" com a buzina ligada no monociclo, vol± mexe no volume dela e **liga arma o alarme de movimento** (andando, dispara). Ver discussão em [Ideias guardadas](#12-ideias-guardadas).
+
 ---
 
 ## 10. Lições aprendidas (as pegadinhas)
@@ -428,6 +449,10 @@ Registradas para não se perderem — **não** são compromisso.
 - Motor de vibração para alertas (sente no pulso).
 - Alto-falante de notebook (4–8 Ω) para bipes.
 - Teclado/tela de senha para destravar a roda (precisa decifrar o desafio-resposta).
+- **Painel de Ajustes "estilo Android"**: arrastar de cima pra baixo a partir da barra superior abre um painel com botões (MPU › abre a tela de config do MPU, com VOLTAR para a principal; Tela auto; Som; Conectar Dream; Print; Desligar). A tela de config do MPU (do `teste_tela_mpu`) ainda não foi portada para a v5.
+- **Print da tela**: despejar o sprite `spr` (240×320, 16 bits) como BMP no SD. No painel de Ajustes, com timer de ~3 s (senão o print sai do próprio painel).
+- **Botões do polegar sem fio**: usar um controle 433 pequeno como entrada do display (o receptor SRX882S ouvindo no conector UART, IO43/IO44, alimentado em 3,3 V). Candidato: o controle da buzina (5 botões) — mas a buzina obedece a ele (ver protocolo na seção 9); alternativa: um controle 433 genérico de outra identidade, que a buzina ignora.
+- **Desligar segurando os 2 botões dos piscas** (deep sleep): desliga também a ponte BLE (apps perdem a roda), então é "desligar", não "apagar a tela". Antes de dormir, mandar "pisca off" pelo 433. Acordar pelos botões (ext1 em IO2/IO3); acordar por movimento só com o fio INT do MPU (IO14) — e provavelmente não é desejável no modo desligado.
 
 **Celular**
 - Notificações no display (Gadgetbridge como Bangle.js, Chronos, ou app próprio).
