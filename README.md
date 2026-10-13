@@ -33,11 +33,13 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 
 | # | Frente | Próximo passo concreto |
 |---|---|---|
-| 1 | **Mochila iFlight (módulo Dream)** | Controlar pelo display: ligar/desligar, cor e efeitos (`teste_mochila`). Depois: tela da mochila integrada. |
-| 2 | **Luz de freio** | Acender o vermelho (mochila / pisca 433) quando a corrente fica negativa na frenagem (limite ~−2 A, com histerese). |
-| 3 | **Integração na ponte v5** | Juntar MPU, piezo e 433 (já provados em teste) como funções da ponte. |
+| 1 | **Bateria do display** | 18650 de teste no lugar do powerbank. Conferir a leitura (`bat` no Serial / Ajustes) com o multímetro, com e sem USB. Depois: célula fina `404070` (~1300 mAh) e decidir o corte por bateria baixa (a placa não protege a célula). |
+| 2 | **Controle da buzina como botões do polegar** | ✅ Buzina pareada com o display (12/10). Agora: ligar o receptor SRX882S no IO3 e testar o mapa dos botões (ver seção 9). Depois: funções para o cadeado fechado e os toques longos. |
+| 3 | **Luz de freio** | Nos **piscas** (prioridade; a mochila é pouco usada): mandar **vermelho** quando a corrente fica negativa na frenagem (limite ~−2 A, com histerese) e **voltar ao que estava** depois, igual ao pisca. **Só quando nenhum pisca estiver ativo**: com o pisca ligado, o lado que avisa pisca vermelho+laranja e o outro fica apagado — o freio estragaria o aviso de curva. Atenção: hoje cada comando 433 é uma rajada de 12 repetições (~0,8 s) — para freio precisa de menos repetições (resposta mais rápida). |
 
-**Concluídos** (viram funções na integração): ✅ MPU (`teste_tela_mpu`), ✅ Piezo (`teste_piezo`), ✅ Piscas 433 MHz (`captura_433` + `teste_tx433`).
+**Concluídos** (já na ponte v5 MIDIA): ✅ MPU, ✅ piezo/som, ✅ piscas 433 MHz (tela + botões), ✅ mochila Dream (tela + conectar), ✅ cortina de Ajustes + tela de config do MPU, ✅ print da tela, ✅ barra de ícones com bateria.
+
+**Lembrete de pedal:** desativar a **economia de bateria do celular** antes de rodar — com ela ligada o GPS do EUC World ficou falhando na metade da volta de 11/10.
 
 ---
 
@@ -87,7 +89,7 @@ ESP32-S3 (16 MB flash, 8 MB PSRAM OPI), tela IPS 2,8" 240×320 (ILI9341V, SPI), 
 | Touch (I2C) | SDA 16, SCL 15, INT 17, RST 18 — **touch girado 180°: inverter X e Y** |
 | Cartão SD (SDIO, 1 linha) | CLK 38, CMD 40, D0 39 |
 | Áudio (I2S) | EN 1 (amplificador: 0 = liga), MCLK 4, BCLK 5, LRCK 7, **IO8 = som ESP32→codec**, IO6 = microfone codec→ESP32. Codec ES8311 configurado por I2C (0x18) |
-| Bateria (ADC) | 9 |
+| Bateria (ADC) | 9 — lê **metade** da tensão (divisor 2:1 da placa); o firmware multiplica por 2 |
 | LED RGB (WS2812) | 42 |
 | Botão BOOT | 0 (usado como buzina) |
 | USB nativo | 19, 20 |
@@ -97,9 +99,11 @@ ESP32-S3 (16 MB flash, 8 MB PSRAM OPI), tela IPS 2,8" 240×320 (ILI9341V, SPI), 
 | Conector | Pinos | Plano de uso |
 |---|---|---|
 | I2C | 3.3V, GND, IO15 (SCL), IO16 (SDA) | **MPU-6050 (0x68)** no mesmo barramento do touch (0x38) e do codec ES8311 (0x18), usando as funções `lgfx::i2c` da LovyanGFX (testado: 0 erros com o touch em uso) |
-| GPIO | IO21, IO14, IO3, IO2 | IO21 = STX882 (433 MHz); IO14 = INT do MPU; **IO2 = botão pisca esquerda, IO3 = botão pisca direita** (ao GND, INPUT_PULLUP, já ativos no firmware) |
+| GPIO | IO21, IO14, IO3, IO2 | IO21 = STX882 (transmissor 433 MHz); IO14 = INT do MPU; **IO3 = DATA do receptor SRX882S** (controle 433); IO2 = livre (era botão do pisca; os botões físicos foram desligados com `BOTOES_PISCA = false`) |
+
+**Receptor SRX882S no display:** VCC → 3V3 · GND → GND · **CS → 3V3** (obrigatório: solto = dormindo) · DATA → IO3 · antena espiral. Alimentado em **3,3 V** (não 5 V), para a saída DATA não mandar 5 V no ESP32.
 | UART | 5V, GND, TXD (IO44), RXD (IO43) | livre: 5 V para receptor 433 MHz, ou UART para GPS |
-| BAT | + / − | LiPo 3,7 V (**conferir a polaridade antes de ligar!**) |
+| BAT | + / − | LiPo 3,7 V (**conferir a polaridade antes de ligar!**). Carregador **TP4054** na placa (até 500 mA): carrega sozinho com o USB-C ligado, nada a fazer no firmware. Com USB presente a placa roda pelo USB (Q3 corta a bateria). ⚠️ **A placa não tem proteção de descarga**: usar célula **com placa de proteção (PCM)** — 18650 "protegida" ou LiPo "with protection board". |
 | SPEAKER | 2 pinos | piezo passivo + 100 Ω em série (saída em ponte: nenhum dos pinos é GND) |
 | BOOT (IO0) | soldar nos pads do botão | botão da buzina em paralelo (não segurar ao ligar a placa) |
 
@@ -116,6 +120,9 @@ Não há outros pinos livres no chip. Para mais portas: **MCP23017** (16 GPIO po
 ---
 
 ## 4. Como compilar
+
+**Versão do arquivo:** a 1ª linha do `.ino` traz `// VERSAO: v5-AAAAMMDDHHMM` (data e hora em que foi gerado). A mesma versão aparece no Serial ao ligar (`=== S16 Companion ponte v5-... ===`) e no rodapé da cortina de Ajustes — assim dá pra saber qual arquivo está gravado no display.
+
 
 ### Arduino IDE
 
@@ -177,10 +184,18 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 ### Telas (deslizar o dedo)
 
 ```
-[ BMS ]  ←  [ PRINCIPAL ]  →  [ CONTROLES ]
+[ BMS ]  ←  [ PRINCIPAL ]  →  [ CONTROLES ]  →  [ PISCAS ]  →  [ MOCHILA ]
+
+         ↓ arrastar pra baixo a partir da barra de cima
+    [ AJUSTES ]  →  MPU >  →  [ CONFIG DO MPU ]  (VOLTAR = principal)
 ```
 
+- **Ajustes (cortina):** arraste pra **baixo** começando na barra de cima; arraste pra **cima** para fechar. Funciona **até sem a roda** (bancada). Botões: **MPU >** (abre a config), **Tela auto**, **Som**, **Mochila** (conectar/desconectar), **Print** (salva a tela 3 s depois; a cortina **continua aberta** — deixa ela pra "printar" a própria cortina, ou arrasta pra cima e vai pra outra tela dentro dos 3 s), **Buzina ext. >**. Embaixo: bateria (V, % e "carregando"), cartão, sensores e a versão do firmware.
+- **Buzina externa:** as 7 funções do controle original, mandadas com a identidade do display: **BUZINA**, volume −/+, **< som / som >** (= segurar vol+/vol− no controle: troca entre os 4 sons), alarme liga/desliga. Se o rádio 433 estiver ocupado, o comando espera na fila e sai em seguida. VOLTAR = tela principal. ✅ Testado em 12/10 (v5-202610122151): troca de sons funcionando pelo display, piscas na ordem certa pelo controle.
+- **Config do MPU:** **GRAVAR** (com o braço na posição de olhar), **AUTO sim/não**, **PADRÃO** (toque 2×; volta os ângulos 30/50) e as barras *acende abaixo de* / *apaga acima de* (seta amarela = onde o braço está agora). Salva ao soltar o dedo. Com esta tela (ou os Ajustes) aberta a tela não apaga sozinha.
+
 - **Principal:** velocidade (cor pelo PWM: verde < 70% < amarelo < 85% < vermelho), barra de PWM, tensão, corrente, temperaturas, trip, máxima e limite.
+- **Pico do PWM** (como o pontinho de um VU): um risco na barra marca o maior PWM recente e "pico NN%" aparece à direita, acima da barra. Fica **parado 5 s** e depois **desce 4 pontos/s** (`PWM_PICO_SEGURA`, `PWM_PICO_CAI`). Conta mesmo com a tela apagada ou em outra página — dá pra ver depois o pico daquela lomba em que não estava olhando.
 - **BMS:** os 2 packs com tensão, SoC, temperatura, célula mínima e máxima, diferença em mV e gráfico das 20 células (escala ampliada).
 - **Controles (v5 MIDIA):**
 
@@ -193,7 +208,21 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 
 ### Barra superior
 
-`RODA` (verde/vermelho) · `APP` (ciano com app conectado) · ♪ (magenta com o controle de mídia ativo) · ● amarela (buzina) · `FAN` · bolinhas da tela atual · ● vermelha (gravando) · hora.
+Só ícones, **sempre visíveis** — cinza escuro = desligado/inativo:
+
+roda (verde conectada / vermelha) · celular (ciano com app conectado) · ♪ (magenta com o controle de mídia ativo) · corneta (amarela quando a buzina toca) · 3 bolinhas da mochila (RGB conectada, amarelo piscando procurando) · ventoinha (laranja ligada) · ● gravação (vermelha gravando; só contorno = sem cartão) · bolinhas das telas · bateria (verde > 40%, amarela > 15%, vermelha piscando abaixo; **raio amarelo = carregando**) · hora.
+
+**Como o display sabe que está carregando** (a placa não tem um pino pra isso — o `CHRG` do TP4054 não vai pro ESP32): (1) USB ligado num **computador** → o USB nativo do ESP32 percebe o PC (carregador de parede/powerbank não é percebido assim); (2) **degrau de tensão**: ao ligar o carregador a placa passa a rodar pelo USB e a bateria só recebe carga, então a tensão **sobe de repente**; ao tirar, **cai de repente**. Limite em `BAT_DEGRAU` (0,06 V) — se o raio errar, é ele que se ajusta. Cada mudança vira evento no log (`bateria: carregando`).
+
+**Raio preso (13/10, corrigido):** bipe/alarme e transmissão 433 puxam corrente e a tensão **afunda**; quando acabam, ela **volta de repente** — parecia o degrau do carregador, e o raio ficava aceso (3,95 V, "carregando" na cortina, sem carregador). Agora: degraus durante som/433 e até 4 s depois são ignorados, e com o raio aceso (sem PC) a tensão filtrada não pode cair mais que `BAT_CAIU` (0,04 V) abaixo do máximo — carregando ela não cai; se cair, o raio apaga.
+
+### Dormir (deep sleep)
+
+O display **dorme sozinho** (quase tudo desliga, inclusive o Bluetooth) quando:
+- fica **10 min sem roda e sem USB/carregador** (e sem toque na tela) — na mesa, parado; ou
+- a **bateria chega ao fim**: abaixo de **3,30 V** por 30 s (a placa não protege a célula sozinha).
+
+Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanternas pelo 433 (se estavam acesas) e mostra "Dormindo — aperte BOOT para ligar" por 2,5 s. **Acorda no BOOT** (é um reinício: a ponte começa do zero). Andando ele nunca dorme (roda conectada). Teste: `dormir` no Serial. Ajustes no topo do código: `DORMIR_SEM_RODA_MS`, `BAT_CORTE_V`.
 
 ### Controle de mídia (v5 MIDIA)
 
@@ -217,6 +246,16 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 | `t 95 6 FF` | envia o comando `95` com o byte 6 = `FF` (experimentos) |
 | `raw AA 55 ... 5A 5A` | envia 20 bytes exatos (ex.: um frame capturado) |
 | `esquecer` | apaga os pareamentos (v5 MIDIA) |
+| `bonds` | lista os pareamentos guardados |
+| `print` | salva a tela agora em `/prints/print_NNN.bmp` |
+| `dormir` | dorme agora (deep sleep); o BOOT acorda |
+| `comandos` (ou `ajuda`, `?`) | lista todos os comandos |
+| `bat` | tensão da bateria (filtrada), %, carregando ou não, leitura crua do IO9 e se o USB é de um PC |
+| `mpu` / `mpu on` / `mpu off` / `mpu gravar` | status do MPU (com os ângulos) / tela automática / grava a posição |
+| `som bipe` / `som alarme` / `som on` / `som off` | testa o som / liga-desliga os bipes |
+| `433 e\|d\|x\|l\|v\|p` | piscas esq/dir, luz apagada/laranja/vermelha/piscando |
+| `433 raw 009F1DAA [curto longo]` | manda bits crus (até 10 dígitos hexa) no formato do controle da buzina — teste de pareamento. Tempos opcionais em µs (padrão 352 920) |
+| `dream on\|off\|liga\|desliga\|cor RR GG BB\|ef N` | mochila |
 
 Prefixos no Serial: `C>` app → roda · `D>` display → roda · `R?` resposta "incomum" da roda · `R>` todos os frames da roda (`DUMP_HEX`).
 
@@ -360,7 +399,9 @@ O botão central cicla laranja → vermelho → piscando → desliga, mas o cód
 
 ### Controle da buzina sem fio (433,92 MHz)
 
-Capturado com `captura_433` (11/10/2026), 2 apertos por botão — **código fixo** (os dois apertos são idênticos). Mesma codificação dos piscas (T ≈ 318 µs; bit 1 = longo ~910 + curto ~350, bit 0 = curto ~350 + longo ~910), mas quadro de **32 bits** (4 bytes, MSB primeiro) + 1 pulso de parada + ~1,2 ms de intervalo entre repetições.
+Capturado com `captura_433` (11/10/2026), 2 apertos por botão — **código fixo** (os dois apertos são idênticos). Mesma **ideia** dos piscas (bit 1 = longo + curto, bit 0 = curto + longo), mas quadro de **32 bits** (4 bytes, MSB primeiro) + 1 pulso de parada + ~1,2 ms de intervalo entre repetições.
+
+**Tempos medidos (média de 10 capturas):** curto ~352 µs, longo ~907–936 µs → proporção **~2,6** (a dos piscas é 3,0: 330/990). O 1º teste com os tempos dos piscas **não fez a buzina tocar** (12/10); o `433 raw` passou a usar os tempos da buzina (`BUZ_CURTO` 352, `BUZ_LONGO` 920, `BUZ_INTERVALO` 1224) e aceita outros para teste: `433 raw 009F1CAA 352 920`.
 
 | | |
 |---|---|
@@ -373,8 +414,39 @@ Capturado com `captura_433` (11/10/2026), 2 apertos por botão — **código fix
 | `99` | volume + |
 | `55` | liga (alarme de movimento) |
 | `33` | desliga (alarme de movimento) |
+| `66` | volume + **segurado** (troca o som da buzina, "anterior") |
+| `FF` | volume − **segurado** (troca o som da buzina, "próximo") |
+
+Recaptura de 12/10 (2 toques + 2 segurando cada botão): buzina, alarme liga e desliga mandam **o mesmo código** tocando ou segurando; só os de volume mudam quando segurados (`66` e `FF`). Ou seja, o controle dá **7 entradas** para o display: 5 toques + 2 segurados. O ajuste de sensibilidade do alarme não apareceu como código diferente.
+
+✅ **12/10: `433 raw 009F1CAA` (tempos 352/920) fez a buzina tocar de primeira** — o display imita o controle.
+
+✅ **12/10: buzina PAREADA com a identidade do display (`00 9F 1D`).** Como parear: toca no touch da buzina → ela faz **10 bipes** (é o modo de aprendizado!) → enquanto bipa, aperta o botão de buzina do controle desejado (ou `433 raw 009F1DAA` no display). Ela guarda **um controle só**: depois disso **não obedece mais o controle original**. Para voltar ao controle original, é só parear de novo com ele.
+
+**Controle → display (receptor SRX882S no IO3):**
+
+| Botão do controle | Código | Ação no display |
+|---|---|---|
+| buzina | `AA` | buzina da **roda** |
+| volume + | `99` | pisca **esquerda** |
+| volume − | `CC` | pisca **direita** |
+| cadeado aberto | `33` | buzina **externa** (o display manda `00 9F 1D AA`) |
+
+**Colisão no ar (12/10):** no 1º teste a buzina externa e os piscas funcionavam "às vezes", mesmo com o display transmitindo toda vez. Motivo: o display respondia em ~80 ms, **com o dedo ainda no botão**, e o controle seguia transmitindo — dois sinais na mesma frequência ao mesmo tempo se embaralham. Agora as ações que usam o rádio 433 (piscas, buzina externa) **esperam o controle parar** (150 ms sem quadros = soltou). A buzina da roda (Bluetooth) continua na hora.
+| cadeado fechado | `55` | **desliga o alarme** da buzina externa (o display manda `00 9F 1D 33`) |
+| segurar vol± | `66` / `FF` | livres (aparece `[433 rx] botao XX sem funcao` no Serial) |
+
+O display só age depois de 2 quadros iguais (contra ruído) e **uma vez por aperto**. Ele ignora tudo que não for a identidade `00 9F 1C` (piscas, o próprio display transmitindo a buzina externa...). Enquanto o display transmite no 433 (~0,5–0,8 s), o receptor fica "surdo".
+
+Obs.: a sensibilidade do alarme se ajusta nos botões de volume, logo depois do cadeado fechado (antes de ativar).
 
 Curiosidade: cada cmd é um nibble repetido (A·A, C·C, 9·9, 5·5, 3·3). Obs.: o detector automático do `captura_433` confundiu o intervalo de ~1226 µs com o "longo"; a decodificação acima foi feita separando as repetições por esse intervalo.
+
+**Plano de teste do pareamento (12/10):**
+1. Com o display, mandar o código **original** da buzina: `433 raw 009F1CAA`. Se ela tocar, o display imita o controle certinho (e o `captura_433` no C3 pode conferir que o quadro saiu igual ao do controle).
+2. Pôr a buzina em modo de aprendizado (segurar o touch liga/desliga, como no dia em que ela "voltou a funcionar") e mandar uma identidade **nova**: `433 raw 009F1DAA`.
+3. Testar os dois: se a buzina passar a obedecer o `9F1D` e **parar** de obedecer o controle original → guarda **1** controle só (provável). Se obedecer os dois → guarda vários (aí precisa descobrir como apagar a memória dela).
+4. Se der certo: o controle original vira entrada **só do display** (receptor SRX882S) e o display repassa a buzina com a identidade dele — sem conflito com vol±/alarme.
 
 ⚠️ **A própria buzina obedece a este controle.** Se ele virar "botões do display" com a buzina ligada no monociclo, vol± mexe no volume dela e **liga arma o alarme de movimento** (andando, dispara). Ver discussão em [Ideias guardadas](#12-ideias-guardadas).
 
@@ -405,6 +477,12 @@ Curiosidade: cada cmd é um nibble repetido (A·A, C·C, 9·9, 5·5, 3·3). Obs.
 - Às vezes coloca vários apps na **mesma** conexão.
 - O nRF Connect em segundo plano segura conexões.
 
+**Qual versão está no display?**
+- O Arduino IDE pode **não recarregar** um `.ino` alterado por fora enquanto está aberto — compila a versão velha sem avisar. Antes de compilar, fechar e reabrir o sketch, e depois de gravar conferir a versão no rodapé da cortina (12/10: "o vol+ continua invertido" era o display rodando a versão anterior).
+
+**Rádio 433: um de cada vez no ar**
+- Se o display transmitir enquanto o controle ainda está transmitindo (dedo no botão), os sinais se embaralham. Resposta via 433 só depois que o controle cala.
+
 **RMT (433 MHz)**
 - `rmtTransmitCompleted()` pode ficar preso em "ocupado" após um envio assíncrono e travar TODOS os envios seguintes. Não dependa dele: espace os envios por **tempo** (`millis()`), calculado pela duração da rajada. Fila de 1 posição (último comando ganha) cobre cliques rápidos.
 
@@ -426,7 +504,7 @@ Curiosidade: cada cmd é um nibble repetido (A·A, C·C, 9·9, 5·5, 3·3). Obs.
 - [ ] **Tela da mochila** no display (liga/desliga, paleta, brilho, efeitos) → frente ativa nº 1.
 - [ ] **Luz de freio** pela corrente negativa (limite ~−2 A, com histerese) → frente ativa nº 2.
 - [ ] **Setas** por botão (mochila + piscas 433 MHz), com desligamento automático.
-- [ ] **Bateria do display**: LiPo + leitura no IO9 + ícone na tela.
+- [x] **Bateria do display**: leitura no IO9 + ícone na barra + % nos Ajustes + alarme abaixo de 3,35 V (12/10/2026). Falta: conferir com multímetro, célula definitiva e corte automático.
 - [ ] **Energia**: chave física + sono automático quando a roda some (acordar pelo botão ou pelo INT do MPU).
 - [ ] **Alarmes**: PWM alto (som/tela piscando); bateria cheia + regeneração forte.
 - [ ] Botão externo de buzina no IO3.
@@ -449,8 +527,7 @@ Registradas para não se perderem — **não** são compromisso.
 - Motor de vibração para alertas (sente no pulso).
 - Alto-falante de notebook (4–8 Ω) para bipes.
 - Teclado/tela de senha para destravar a roda (precisa decifrar o desafio-resposta).
-- **Painel de Ajustes "estilo Android"**: arrastar de cima pra baixo a partir da barra superior abre um painel com botões (MPU › abre a tela de config do MPU, com VOLTAR para a principal; Tela auto; Som; Conectar Dream; Print; Desligar). A tela de config do MPU (do `teste_tela_mpu`) ainda não foi portada para a v5.
-- **Print da tela**: despejar o sprite `spr` (240×320, 16 bits) como BMP no SD. No painel de Ajustes, com timer de ~3 s (senão o print sai do próprio painel).
+- ~~Painel de Ajustes "estilo Android" e print da tela~~ → **feitos em 12/10** (ver [Usando o display](#6-usando-o-display)). Falta no painel: botão **Desligar** (deep sleep, ver abaixo).
 - **Botões do polegar sem fio**: usar um controle 433 pequeno como entrada do display (o receptor SRX882S ouvindo no conector UART, IO43/IO44, alimentado em 3,3 V). Candidato: o controle da buzina (5 botões) — mas a buzina obedece a ele (ver protocolo na seção 9); alternativa: um controle 433 genérico de outra identidade, que a buzina ignora.
 - **Desligar segurando os 2 botões dos piscas** (deep sleep): desliga também a ponte BLE (apps perdem a roda), então é "desligar", não "apagar a tela". Antes de dormir, mandar "pisca off" pelo 433. Acordar pelos botões (ext1 em IO2/IO3); acordar por movimento só com o fio INT do MPU (IO14) — e provavelmente não é desejável no modo desligado.
 

@@ -1,3 +1,4 @@
+// VERSAO: v5-202610131056   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -14,6 +15,24 @@
   - Repassa CRU: notificacoes de qualquer caracteristica -> celular;
     escritas do celular em qualquer caracteristica -> roda.
   - FFE1 e sempre assinada (para a tela); as demais so quando o celular assina.
+
+  Novidades (12/10/2026):
+  - Cortina de AJUSTES: arraste pra baixo comecando na barra de cima (funciona ate
+    sem a roda). Botoes: MPU > (tela de config), Tela auto, Som, Mochila, Print, Fechar.
+  - Tela de config do MPU: GRAVAR, AUTO, PADRAO e barras dos angulos (salvos).
+  - Barra de cima so com icones + bateria do display (IO9) e tudo cinza quando inativo.
+  - Print da tela em BMP no SD (/prints). Serial: print | bat | 433 raw <hexa>.
+  - Botoes dos piscas: antirrepique novo (sem o "duplo clique").
+  - Carregando: raio no icone da bateria (USB do PC ou "degrau" de tensao; ver batLoop).
+  - Print pela cortina nao fecha mais a cortina. Serial: 'comandos' lista tudo.
+  - Pico do PWM na barra (segura 5 s, depois desce) + "pico NN%" ao lado.
+  - '433 raw' com os tempos medidos do controle da buzina (e tempos opcionais).
+  - RECEPTOR 433 no IO3: o controle da buzina vira entrada do display (buzina da roda,
+    piscas, buzina externa). Botoes fisicos dos piscas desligados (BOTOES_PISCA).
+  - Tela da buzina externa (7 funcoes) na cortina; cadeado fechado = desliga o alarme dela.
+  Novidades (13/10/2026):
+  - DORME sozinho: 10 min sem roda e sem USB, ou bateria no fim (< 3,30 V). BOOT acorda.
+  - Raio de "carregando" nao fica mais preso depois de bipe/alarme/433.
 
   Bibliotecas: NimBLE-Arduino 2.5.1 COM O PATCH (pasta patch_nimble_2.5.1), LovyanGFX (lovyan03)
   Placa: "ESP32S3 Dev Module"
@@ -32,10 +51,16 @@
 #include <vector>
 #include <Preferences.h>     // guarda a configuracao na flash (sobrevive ao desligar)
 #include <ESP_I2S.h>         // audio para o piezo/alto-falante (codec ES8311)
+#include <esp_sleep.h>        // dormir (deep sleep) sem roda/USB ou com a bateria no fim
+#include <driver/rtc_io.h>
+#include <driver/gpio.h>
 
 // Chave de teste: 0 desliga TODO o som (nao inicia I2S/codec/tarefa). Serve para
 // isolar se um problema vem do piezo ou de outra mudanca. 1 = som normal.
 #define USAR_SOM 1
+
+// Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
+static const char* VERSAO = "v5-202610131056";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -96,10 +121,24 @@ static const uint8_t  CMD_PISCA_ESQ = 0x11, CMD_PISCA_DIR = 0x12, CMD_LUZ_OFF = 
 static const uint8_t  CMD_LUZ_LARANJA = 0x13, CMD_LUZ_VERMELHO = 0x23, CMD_LUZ_PISCANDO = 0x33;
 static const int      TX433_SIMB = 41;               // 40 bits + 1 simbolo final
 static rmt_data_t     tx433Simb[TX433_SIMB * TX433_REPET];
+// Controle da BUZINA (medido na captura): pulso curto ~352 us, longo ~920 us
+// (proporcao ~2,6, diferente da dos piscas) e ~1,2 ms entre as repeticoes. Usado no '433 raw'.
+static const uint16_t BUZ_CURTO = 352, BUZ_LONGO = 920, BUZ_INTERVALO = 1224;
+// Buzina EXTERNA: pareada com esta identidade do display (12/10/2026). Fila de 1 posicao
+// (o mais recente ganha), enviada quando o radio libera - igual aos piscas.
+static const uint32_t BUZ_EXT_ID = 0x009F1D;
+static volatile bool    buzExtPend = false;
+static volatile uint8_t buzExtCmd = 0;
 static bool           tx433Ok = false;
 
 // Estado das luzes/piscas (lanterninhas de bike: capacete + traseira do mono)
 static const int PIN_PISCA_ESQ = 2, PIN_PISCA_DIR = 3;   // botoes ao GND (INPUT_PULLUP)
+// Os botoes fisicos dos piscas foram substituidos pelo controle 433 (12/10/2026):
+// o IO3 agora e do RECEPTOR. false = botoes desligados (o IO2 fica livre).
+static const bool BOTOES_PISCA = false;
+// Receptor 433 (SRX882S) no IO3: o controle da buzina vira entrada do display.
+static const int      RX433_PIN = 3;
+static const uint32_t CONTROLE_ID = 0x009F1C;     // identidade do controle (3 primeiros bytes)
 enum { LUZ_OFF = 0, LUZ_LARANJA = 1, LUZ_VERMELHO = 2, LUZ_PISCANDO = 3 };
 static const uint8_t LUZ_CMD[4] = { CMD_LUZ_OFF, CMD_LUZ_LARANJA, CMD_LUZ_VERMELHO, CMD_LUZ_PISCANDO };
 static const char*   LUZ_NOME[4] = { "apagado", "laranja", "vermelho", "piscando" };
@@ -123,8 +162,11 @@ static volatile int somPedido = 0;         // muda a cada pedido; a tarefa reini
 // variaveis; as FUNcoes do MPU ficam mais abaixo, perto do setup).
 static const uint8_t MPU_END = 0x68;
 static const float   MPU_LSB_ACEL = 8192.0f;      // escala +-4 g
-static const float   MPU_ANG_LIGA = 30;           // graus: perto da posicao -> acende
-static const float   MPU_ANG_APAGA = 50;          // graus: longe -> apaga
+static const float   MPU_ANG_LIGA = 30;           // PADRAO (graus): perto da posicao -> acende
+static const float   MPU_ANG_APAGA = 50;          // PADRAO (graus): longe -> apaga
+static float mpuAngLiga = MPU_ANG_LIGA;           // valores em uso (ajustaveis na tela do MPU, salvos)
+static float mpuAngApaga = MPU_ANG_APAGA;
+static uint32_t mpuCfgConfirma = 0;               // 1o toque no PADRAO (pede "certeza?" por 3 s)
 static const uint32_t MPU_T_LIGAR = 250;          // ms na posicao para acender
 static const uint32_t MPU_T_APAGAR = 1500;        // ms fora para apagar
 static const uint32_t MPU_T_TOQUE = 8000;         // ms acesa depois de um toque
@@ -136,6 +178,37 @@ static float mpuFx = 0, mpuFy = 0, mpuFz = 1;     // gravidade filtrada (tira a 
 static float mpuAngulo = 0;
 static bool  telaAcesa = true;
 static uint32_t mpuUltimoToque = 0;
+
+// Telas "por cima" das paginas: o painel de Ajustes (puxado de cima) e a config do MPU.
+// (int em vez de enum: o Arduino cria prototipos no topo, antes de um enum existir)
+static const int TELA_NORMAL = 0, TELA_AJUSTES = 1, TELA_MPU = 2, TELA_BUZEXT = 3;
+static int modoTela = TELA_NORMAL;
+
+// Print da tela: hora marcada para salvar o BMP (0 = nenhum pedido)
+static uint32_t printEm = 0;
+
+// Bateria do display: IO9 le a METADE da tensao (divisor 2:1 da placa).
+// Carregador TP4054 (ate 500 mA) na placa; ela NAO tem protecao de descarga.
+static const int BAT_PIN = 9;
+static float batV = 0;                    // tensao filtrada (V); 0 = ainda sem leitura
+static int   batPct = -1;                 // 0..100; -1 = sem bateria / leitura invalida
+static bool  batAvisouBaixa = false;
+static bool  batCarregando = false;       // estimado (a placa nao tem pino de "carregando")
+static bool  usbPC = false;               // USB ligado num COMPUTADOR (o USB nativo percebe)
+
+// DORMIR (deep sleep): quase tudo desliga, inclusive o Bluetooth. Acorda no BOOT
+// (= reiniciar). Dorme quando: 10 min SEM roda e SEM USB/carregador (na mesa, parado),
+// ou bateria no fim (< BAT_CORTE_V por 30 s) - a placa nao protege a celula sozinha.
+static const uint32_t DORMIR_SEM_RODA_MS = 10UL * 60UL * 1000UL;
+static const float    BAT_CORTE_V = 3.30f;
+
+// Pico do PWM (como o pontinho de um VU de aparelho de som): marca o maior PWM,
+// SEGURA por um tempo e depois desce devagar. Assim da para ver, segundos depois,
+// o pico de uma lomba ou acelerada em que nao estava olhando o display.
+static const uint32_t PWM_PICO_SEGURA = 5000;    // ms parado no pico
+static const float    PWM_PICO_CAI = 4.0f;       // depois cai X pontos de % por segundo
+static int      pwmPicoV = 0;                    // valor do pico quando foi marcado
+static uint32_t pwmPicoT = 0;                    // quando foi marcado
 
 // ---- tabela das opcoes (para o console e para salvar/carregar) ----
 struct OpcaoBool  { const char* nome; bool* valor; bool padrao; };
@@ -1024,6 +1097,36 @@ static bool comandoConfig(String linha) {
   return false;
 }
 
+// Lista de todos os comandos do Serial ('comandos', 'ajuda' ou '?')
+static void mostrarComandos() {
+  static const char* const L[] = {
+    "--- comandos (Serial Monitor, 115200, \"Nova linha\") ---",
+    "comandos | ajuda | ?          esta lista",
+    "config                        mostra a configuracao salva",
+    "config padrao                 volta tudo ao padrao de fabrica",
+    "NOME = valor                  muda uma opcao (ex.: DUMP_OTHER = false, NAME_FILTER = KS)",
+    "bat                           bateria do display: tensao, %, carregando",
+    "print                         salva a tela agora em /prints/print_NNN.bmp",
+    "dormir                        dorme agora (deep sleep); o BOOT acorda",
+    "mpu | mpu on | mpu off        status / tela automatica pelo pulso",
+    "mpu gravar                    grava a posicao de olhar (braco na posicao)",
+    "som bipe | som alarme         testa o som",
+    "som on | som off              liga/desliga os bipes",
+    "433 e | 433 d                 pisca esquerda / direita (liga; de novo volta ao modo base)",
+    "433 x | l | v | p             luz: apagada / laranja / vermelha / piscando",
+    "433 raw <hexa> [curto longo]  bits crus no formato da buzina (ex.: 433 raw 009F1CAA 352 920)",
+    "dream on | dream off          manter a mochila conectada (salvo)",
+    "dream liga | dream desliga    luzes da mochila",
+    "dream cor RR GG BB            cor fixa (hexa)",
+    "dream ef N                    efeito N (hexa)",
+    "bonds                         lista os pareamentos guardados",
+    "esquecer                      apaga os pareamentos (esqueca no celular tambem)",
+    "t <cmd> <pos 2-15> <valor>    comando para a roda (hexa), ex.: t 95 6 FF",
+    "raw <20 bytes hexa>           frame cru para a roda",
+  };
+  for (const char* s : L) Serial.println(s);
+}
+
 // ---------- Console de experimentos (digite no Serial Monitor, "Nova linha" ligado) ----------
 //   t 95 6 FF                 -> comando 95 com o byte 6 = FF (resto zero, final 14 5A 5A)
 //   raw AA 55 00 ... 5A 5A    -> envia exatamente esses 20 bytes (ex.: um frame capturado)
@@ -1038,6 +1141,31 @@ static void handleSerialConsole() {
     if (c != '\n') { if (n < (int)sizeof(line) - 1) line[n++] = c; continue; }
     line[n] = 0; n = 0;
     if (comandoConfig(String(line))) continue;   // "DUMP_OTHER = false", "config"...
+    String orig = String(line);                  // copia inteira (o strtok abaixo picota a linha)
+    orig.trim();
+    if (orig.startsWith("433 raw ")) {           // 433 raw <hexa> [curto longo]: bits crus no formato da buzina
+      String resto = orig.substring(8); resto.trim();
+      int e1 = resto.indexOf(' ');
+      String hx = e1 < 0 ? resto : resto.substring(0, e1);
+      uint16_t curto = BUZ_CURTO, longo = BUZ_LONGO;
+      if (e1 > 0) {                              // tempos opcionais em microssegundos
+        String t = resto.substring(e1 + 1); t.trim();
+        int e2 = t.indexOf(' ');
+        if (e2 > 0) { curto = t.substring(0, e2).toInt(); longo = t.substring(e2 + 1).toInt(); }
+        else Serial.println("433 raw: tempos sao 2 numeros (curto longo), ex.: 433 raw 009F1CAA 350 920");
+      }
+      tx433Raw(hx.c_str(), curto, longo);
+      continue;
+    }
+    if (orig == "comandos" || orig == "ajuda" || orig == "help" || orig == "?") { mostrarComandos(); continue; }
+    if (orig == "print") { printEm = millis() + 1; continue; }   // print da tela agora
+    if (orig == "dormir") { dormir("comando dormir"); continue; }  // testa o sono agora
+    if (orig == "bat") {
+      Serial.printf("bateria: %.2f V  %d%%  %s  (IO9 cru: %lu mV = metade)  USB do PC: %s\n", batV, batPct,
+                    batCarregando ? "CARREGANDO" : "na bateria",
+                    (unsigned long)analogReadMilliVolts(BAT_PIN), usbPC ? "sim" : "nao");
+      continue;
+    }
 
     char* save;
     char* tok = strtok_r(line, " ", &save);
@@ -1079,7 +1207,7 @@ static void handleSerialConsole() {
       else if (a == "l") luzSetBase(LUZ_LARANJA);
       else if (a == "v") luzSetBase(LUZ_VERMELHO);
       else if (a == "p") luzSetBase(LUZ_PISCANDO);
-      else Serial.printf("433: %s  base=%s pisca=%d  (use: 433 e|d|x|l|v|p)\n",
+      else Serial.printf("433: %s  base=%s pisca=%d  (use: 433 e|d|x|l|v|p  ou  433 raw <hexa>)\n",
                          tx433Ok ? "ok" : "sem RMT", LUZ_NOME[luzBase], piscaAtivo);
       continue;
     }
@@ -1097,11 +1225,13 @@ static void handleSerialConsole() {
       String a = String(line + 4); a.trim();       // tudo depois de "mpu "
       if (a == "gravar") mpuSalvarRef();
       else if (a == "on" || a == "off") { comandoConfig(String("TELA_AUTO ") + a); }
-      else Serial.printf("mpu: %s | TELA_AUTO=%s | ref=%s | angulo=%.1f | tela=%s\n",
+      else Serial.printf("mpu: %s | TELA_AUTO=%s | ref=%s | angulo=%.1f (acende <%.0f, apaga >%.0f) | tela=%s\n",
                          mpuOk ? "ok" : "sem sensor", TELA_AUTO ? "on" : "off",
-                         mpuTemRef ? "sim" : "nao", mpuAngulo, telaAcesa ? "acesa" : "apagada");
+                         mpuTemRef ? "sim" : "nao", mpuAngulo, mpuAngLiga, mpuAngApaga,
+                         telaAcesa ? "acesa" : "apagada");
       continue;
     }
+    if (nome != "t" && nome != "raw") { Serial.println("Comando nao reconhecido. Digite 'comandos' para ver a lista."); continue; }
     if (!mainRemote) { Serial.println("Roda nao conectada"); continue; }
     uint8_t p[20] = {0xAA, 0x55};
     if (nome == "t" && cnt == 3 && v[1] >= 2 && v[1] <= 15) {
@@ -1110,9 +1240,7 @@ static void handleSerialConsole() {
     } else if (nome == "raw" && cnt == 20) {
       memcpy(p, v, 20);
     } else {
-      Serial.println("Uso:  t <cmd> <posicao 2-15> <valor>   (hex)   ex.: t 95 6 FF");
-      Serial.println("      config | config padrao | DUMP_OTHER = false | NAME_FILTER = KS ...");
-      Serial.println("      raw <20 bytes hex>");
+      Serial.println("Uso:  t <cmd> <posicao 2-15> <valor> (hexa), ex.: t 95 6 FF  |  raw <20 bytes hexa>");
       continue;
     }
     mainRemote->writeValue(p, sizeof(p), false);
@@ -1222,45 +1350,74 @@ static const int NUM_PAGES = 5;
 static int page = 1;
 static uint32_t hornFlashUntil = 0;     // mostra "BUZINA" na barra por um instante
 
+// Barra superior: so icones (todos sempre visiveis; cinza escuro = desligado/inativo)
+//   roda | app | nota (controle de midia) | buzina | mochila | ventoinha | gravacao
+//   | bolinhas das telas | bateria | hora
 static void drawTopBar() {
   bool wheelOk = client && client->isConnected();
   spr.fillRect(0, 0, 240, 22, 0x18E3);
   spr.setFont(&fonts::Font2);
   spr.setTextSize(1);
-  spr.setTextDatum(middle_left);
-  spr.setTextColor(wheelOk ? TFT_GREEN : TFT_RED);
-  spr.drawString("RODA", 4, 11);
-  // APP: um app conectado na identidade da roda
-  spr.setTextColor(appConns > 0 ? TFT_CYAN : COL_FRAME);
-  spr.drawString("APP", 44, 11);
+  // roda: pneu (aro duplo) + cubo. Verde = conectada, vermelho = nao
+  uint16_t cr0 = wheelOk ? TFT_GREEN : TFT_RED;
+  spr.drawCircle(10, 11, 7, cr0); spr.drawCircle(10, 11, 6, cr0);
+  spr.fillCircle(10, 11, 2, cr0);
+  // app: celular. Ciano = um app conectado na identidade da roda
+  uint16_t ca = appConns > 0 ? TFT_CYAN : COL_FRAME;
+  spr.drawRoundRect(22, 3, 10, 16, 2, ca);
+  spr.drawFastHLine(25, 15, 4, ca);
   // nota musical: controle de midia conectado e ativo no celular
   bool hidOk = hidAtivo && hidConnHandle != BLE_HS_CONN_HANDLE_NONE;
   uint16_t cn = hidOk ? TFT_MAGENTA : COL_FRAME;
-  spr.fillCircle(80, 15, 3, cn);
-  spr.drawFastVLine(83, 4, 12, cn);
-  spr.drawLine(83, 4, 87, 7, cn);
-  if (millis() < hornFlashUntil) spr.fillCircle(122, 11, 5, TFT_YELLOW);   // buzina
-  if (wd.cooling > 0) { spr.setTextColor(TFT_ORANGE); spr.drawString("FAN", 110, 11); }
+  spr.fillCircle(40, 15, 3, cn);
+  spr.drawFastVLine(43, 4, 12, cn);
+  spr.drawLine(43, 4, 47, 7, cn);
+  // buzina: corneta. Amarela por um instante quando toca
+  uint16_t cz = millis() < hornFlashUntil ? TFT_YELLOW : COL_FRAME;
+  spr.fillRect(51, 8, 4, 6, cz);
+  spr.fillTriangle(55, 8, 63, 3, 63, 18, cz);
+  spr.fillTriangle(55, 8, 55, 13, 63, 18, cz);
   // mochila (Dream): 3 bolinhas em triangulo. RGB = conectado; piscando = tentando; cinza = desligado
   {
-    int dcx = 100;
+    int dcx = 74;
     bool tentando = dreamQuer && !dreamConectado;
     bool piscaOn = (millis() / 400) % 2;
     uint16_t cr, cg, cb;
     if (dreamConectado)      { cr = TFT_RED; cg = TFT_GREEN; cb = TFT_BLUE; }
     else if (tentando)       { cr = cg = cb = piscaOn ? TFT_YELLOW : 0x18E3; }   // pisca (0x18E3 = fundo)
-    else                     { cr = cg = cb = COL_DIM; }
+    else                     { cr = cg = cb = COL_FRAME; }
     spr.fillCircle(dcx, 7, 2, cr);
     spr.fillCircle(dcx - 4, 14, 2, cg);
     spr.fillCircle(dcx + 4, 14, 2, cb);
   }
-  // bolinhas da tela: centradas entre o icone do Dream (~126) e o relogio
+  // ventoinha da roda ("Cooling"): laranja quando ligada
+  uint16_t cv = wd.cooling > 0 ? TFT_ORANGE : COL_FRAME;
+  spr.fillCircle(89, 11, 2, cv);
+  spr.fillCircle(89, 5, 2, cv); spr.fillCircle(84, 14, 2, cv); spr.fillCircle(94, 14, 2, cv);
+  // gravacao da viagem no SD: vermelho gravando; contorno = sem cartao
+  if (sdOk) spr.fillCircle(102, 11, 4, rideLogging ? TFT_RED : COL_FRAME);
+  else      spr.drawCircle(102, 11, 4, COL_FRAME);
+  // bolinhas das telas (na cortina de Ajustes / tela do MPU nenhuma fica marcada)
   for (int i = 0; i < NUM_PAGES; i++) {
-    int x = 140 + i * 9;
-    if (i == page) spr.fillCircle(x, 11, 3, TFT_WHITE); else spr.drawCircle(x, 11, 3, COL_DIM);
+    int x = 114 + i * 8;
+    if (i == page && modoTela == TELA_NORMAL) spr.fillCircle(x, 11, 3, TFT_WHITE);
+    else spr.drawCircle(x, 11, 3, COL_DIM);
+  }
+  // bateria do display: verde > 40%, amarela > 15%, vermelha abaixo. Contorno so = sem leitura
+  {
+    uint16_t cb0 = batPct < 0 ? COL_FRAME : batPct > 40 ? TFT_GREEN : batPct > 15 ? TFT_YELLOW : TFT_RED;
+    if (batPct >= 0 && batPct <= 15 && !batCarregando && (millis() / 500) % 2) cb0 = COL_FRAME;   // pisca quando baixa
+    spr.drawRect(160, 6, 20, 11, cb0);
+    spr.fillRect(180, 9, 2, 5, cb0);
+    if (batPct > 0) spr.fillRect(162, 8, max(1, 16 * batPct / 100), 7, cb0);
+    if (batCarregando) {                       // raio por cima, como nos celulares
+      spr.fillTriangle(173, 3, 164, 12, 170, 12, 0x18E3);   // contorno escuro (fundo da barra)
+      spr.fillTriangle(168, 10, 176, 10, 166, 20, 0x18E3);
+      spr.fillTriangle(172, 4, 165, 11, 170, 11, TFT_YELLOW);
+      spr.fillTriangle(169, 11, 175, 11, 167, 19, TFT_YELLOW);
+    }
   }
   spr.setTextDatum(middle_right);
-  spr.setTextColor(COL_DIM);
   char buf[16];
   if (clockSet) {                       // hora (acertada pela roda ou pelo app)
     time_t t = time(nullptr); struct tm tmv; localtime_r(&t, &tmv);
@@ -1268,7 +1425,6 @@ static void drawTopBar() {
     spr.setTextColor(TFT_WHITE);
     spr.drawString(buf, 236, 11);
   }
-  if (rideLogging) spr.fillCircle(192, 11, 5, TFT_RED);   // gravando
 }
 
 static void drawCell(int x, int y, int w, int h, const char* label, const char* value) {
@@ -1295,6 +1451,20 @@ static void drawStatus() {
   spr.setTextColor(COL_DIM);
   spr.drawString(statusL2, 120, 175);
   spr.pushSprite(0, 0);
+}
+
+// Pico que aparece agora: o marcado, parado por PWM_PICO_SEGURA, depois descendo
+// PWM_PICO_CAI pontos/s - mas nunca abaixo do PWM atual.
+static int pwmPicoMostrar() {
+  uint32_t passou = millis() - pwmPicoT;
+  int v = pwmPicoV;
+  if (passou > PWM_PICO_SEGURA) v -= (int)((passou - PWM_PICO_SEGURA) * PWM_PICO_CAI / 1000.0f);
+  return max(v, max(wd.pwm, 0));
+}
+// Chamada a cada volta do loop (o pico conta mesmo com outra tela aberta ou a tela apagada)
+static void pwmPicoAtualizar() {
+  if (wd.pwm < 0 || millis() - wd.lastUpdate > 2000) return;
+  if (wd.pwm >= pwmPicoMostrar()) { pwmPicoV = wd.pwm; pwmPicoT = millis(); }
 }
 
 static void drawData() {
@@ -1326,6 +1496,17 @@ static void drawData() {
   if (wd.pwm > 0) {
     int fill = (bw - 4) * min(wd.pwm, 100) / 100;
     spr.fillRoundRect(bx + 2, by + 2, fill, bh - 4, 4, pwmColor(wd.pwm));
+  }
+  // pico: risquinho na barra + "pico NN%" no canto (so quando esta acima do atual)
+  int pico = pwmPicoMostrar();
+  if (pico > 0 && pico > wd.pwm) {
+    int xp = bx + 2 + (bw - 4) * min(pico, 100) / 100;
+    spr.fillRect(xp - 3, by + 2, 4, bh - 4, pwmColor(pico));
+    snprintf(buf, sizeof(buf), "pico %d%%", pico);
+    spr.setFont(&fonts::Font2);
+    spr.setTextDatum(middle_right);
+    spr.setTextColor(pwmColor(pico));
+    spr.drawString(buf, 232, 135);
   }
   spr.setFont(&fonts::FreeSansBold12pt7b);
   spr.setTextDatum(middle_center);
@@ -1728,7 +1909,257 @@ static void dreamArrastaSlider(int which, int x) {
   if (which == 1) dreamReaplicar(); else if (dreamModo == 1) dreamEnviarEfeito();
 }
 
+// ---------- Cortina de AJUSTES (arrastar de cima pra baixo a partir da barra) ----------
+// Grade 2 x 3:   [MPU >]   [Tela auto]
+//                [Som]     [Mochila]
+//                [Print]   [Buzina ext. >]
+// Embaixo: bateria, cartao, sensores. Fecha arrastando pra cima.
+static const int AJ_X[2] = { 6, 124 }, AJ_W = 110, AJ_H = 54, AJ_Y0 = 50, AJ_DY = 60;
+static const int AJ_N = 6;
+
+static void drawBotaoAjuste(int i, const char* titulo, const char* sub, uint16_t fundo, uint16_t corSub) {
+  int x = AJ_X[i % 2], y = AJ_Y0 + (i / 2) * AJ_DY;
+  spr.fillRoundRect(x, y, AJ_W, AJ_H, 8, fundo);
+  spr.drawRoundRect(x, y, AJ_W, AJ_H, 8, COL_FRAME);
+  spr.setFont(&fonts::Font2); spr.setTextDatum(middle_center);
+  spr.setTextColor(TFT_WHITE);
+  spr.drawString(titulo, x + AJ_W / 2, y + AJ_H / 2 - 9);
+  spr.setTextColor(corSub);
+  spr.drawString(sub, x + AJ_W / 2, y + AJ_H / 2 + 10);
+}
+
+static void drawAjustes() {
+  spr.fillScreen(TFT_BLACK);
+  drawTopBar();
+  spr.setFont(&fonts::Font2);
+  spr.setTextDatum(middle_left);  spr.setTextColor(TFT_WHITE); spr.drawString("Ajustes", 6, 36);
+  spr.setTextDatum(middle_right); spr.setTextColor(COL_DIM);   spr.drawString("arraste p/ cima: fecha", 234, 36);
+
+  const uint16_t LIG = TFT_DARKGREEN, DESL = 0x2124;
+  drawBotaoAjuste(0, "MPU  >", mpuOk ? "configurar" : "sem sensor", TFT_NAVY, mpuOk ? COL_DIM : TFT_RED);
+  drawBotaoAjuste(1, "Tela auto", TELA_AUTO ? "sim" : "nao", TELA_AUTO ? LIG : DESL, TELA_AUTO ? TFT_WHITE : COL_DIM);
+  drawBotaoAjuste(2, "Som", !somOk ? "sem codec" : SOM_ON ? "sim" : "nao", SOM_ON && somOk ? LIG : DESL,
+                  SOM_ON && somOk ? TFT_WHITE : COL_DIM);
+  drawBotaoAjuste(3, "Mochila", dreamConectado ? "conectada" : dreamQuer ? "procurando" : "desligada",
+                  dreamQuer ? LIG : DESL, dreamConectado ? TFT_WHITE : dreamQuer ? TFT_YELLOW : COL_DIM);
+  char subPrint[16];
+  if (!sdOk)        snprintf(subPrint, sizeof(subPrint), "sem cartao");
+  else if (printEm) snprintf(subPrint, sizeof(subPrint), "em %lu s...",
+                             (unsigned long)((printEm > millis() ? printEm - millis() : 0) + 999) / 1000);
+  else              snprintf(subPrint, sizeof(subPrint), "em 3 s");
+  drawBotaoAjuste(4, "Print", subPrint, TFT_PURPLE, !sdOk ? TFT_RED : printEm ? TFT_YELLOW : COL_DIM);
+  drawBotaoAjuste(5, "Buzina ext. >", tx433Ok ? "som/vol/alarme" : "sem 433", 0x7800, tx433Ok ? COL_DIM : TFT_RED);
+
+  // informacoes
+  char b[48];
+  int y = AJ_Y0 + 3 * AJ_DY + 8;
+  spr.setTextDatum(top_left);
+  if (batPct >= 0) snprintf(b, sizeof(b), "Bateria: %.2f V  %d%%%s", batV, batPct, batCarregando ? "  carregando" : "");
+  else             snprintf(b, sizeof(b), "Bateria: sem leitura (%.2f V)", batV);
+  spr.setTextColor(batPct < 0 ? COL_DIM : batPct > 15 ? TFT_WHITE : TFT_RED);
+  spr.drawString(b, 6, y);
+  snprintf(b, sizeof(b), "Cartao SD: %s    MPU: %s", sdOk ? "ok" : "ausente", mpuOk ? "ok" : "--");
+  spr.setTextColor(COL_DIM); spr.drawString(b, 6, y + 20);
+  snprintf(b, sizeof(b), "433 %s  som %s  %s", tx433Ok ? "ok" : "--", somOk ? "ok" : "--", VERSAO);
+  spr.drawString(b, 6, y + 40);
+  spr.pushSprite(0, 0);
+}
+
+static void abrirAjustes() { modoTela = TELA_AJUSTES; Serial.println("Ajustes"); }
+static void fecharAjustes() { modoTela = TELA_NORMAL; mpuCfgConfirma = 0; Serial.printf("Tela %d\n", page); }
+
+static void tocarAjustes(int x, int y) {
+  for (int i = 0; i < AJ_N; i++) {
+    int bx = AJ_X[i % 2], by = AJ_Y0 + (i / 2) * AJ_DY;
+    if (x < bx || x >= bx + AJ_W || y < by || y >= by + AJ_H) continue;
+    switch (i) {
+      case 0: modoTela = TELA_MPU; mpuCfgConfirma = 0; break;
+      case 1: comandoConfig(String("TELA_AUTO ") + (TELA_AUTO ? "off" : "on")); break;
+      case 2: comandoConfig(String("SOM_ON ") + (SOM_ON ? "off" : "on")); somBipe(); break;   // bipe so se ligou
+      case 3: dreamSetAuto(!dreamQuer); break;
+      case 4:
+        // A cortina FICA aberta: em 3 s sai o print do que estiver na tela. Da tempo de
+        // fechar (arrastar pra cima) e ir para outra tela, ou de deixar e "printar" a cortina.
+        if (!sdOk) { Serial.println("[print] sem cartao SD"); break; }
+        printEm = millis() + 3000;
+        Serial.println("[print] em 3 s...");
+        break;
+      case 5: modoTela = TELA_BUZEXT; break;
+    }
+    return;
+  }
+}
+
+// ---------- Tela de config do MPU (aberta pelos Ajustes) ----------
+// [GRAVAR] [AUTO sim/nao] [PADRAO]  +  barras "acende abaixo de" / "apaga acima de"
+// (com a seta amarela = onde o braco esta AGORA) + estado ao vivo + VOLTAR.
+// Enquanto esta tela esta aberta a tela nao apaga sozinha (da pra testar olhando).
+static const int MC_BY = 46, MC_BH = 36, MC_BW = 74;
+static const int MC_BX[3] = { 4, 83, 162 };
+static const int MC_BAR_Y[2] = { 92, 144 }, MC_BAR_H = 46;
+static const int MC_TR_X1 = 16, MC_TR_X2 = 224;
+static const float MC_MIN[2] = { 5, 10 }, MC_MAX[2] = { 80, 90 };
+static const int MC_VOLTAR_Y = 268, MC_VOLTAR_H = 46;
+
+static int mpuCfgX(int i, float v) {
+  return MC_TR_X1 + (int)((v - MC_MIN[i]) / (MC_MAX[i] - MC_MIN[i]) * (MC_TR_X2 - MC_TR_X1));
+}
+
+static void drawMpuBarra(int i) {
+  int y = MC_BAR_Y[i];
+  float v = (i == 0) ? mpuAngLiga : mpuAngApaga;
+  char t[16]; snprintf(t, sizeof(t), "%.0f graus", v);
+  spr.setFont(&fonts::Font2);
+  spr.setTextDatum(top_left);  spr.setTextColor(TFT_WHITE);
+  spr.drawString(i == 0 ? "Acende abaixo de" : "Apaga acima de", 6, y);
+  spr.setTextDatum(top_right); spr.setTextColor(TFT_CYAN);
+  spr.drawString(t, 234, y);
+  int yt = y + 32, xv = mpuCfgX(i, v);
+  spr.fillRoundRect(MC_TR_X1, yt - 3, MC_TR_X2 - MC_TR_X1, 6, 3, 0x4208);
+  spr.fillRoundRect(MC_TR_X1, yt - 3, xv - MC_TR_X1, 6, 3, TFT_CYAN);
+  if (mpuOk && mpuTemRef) {                     // seta: angulo do braco agora
+    float a = constrain(mpuAngulo, MC_MIN[i], MC_MAX[i]);
+    int xa = mpuCfgX(i, a);
+    spr.fillTriangle(xa - 5, yt - 14, xa + 5, yt - 14, xa, yt - 6, TFT_YELLOW);
+  }
+  spr.fillCircle(xv, yt, 8, TFT_WHITE);
+}
+
+static void drawMpuCfg() {
+  if (mpuCfgConfirma && millis() - mpuCfgConfirma > 3000) mpuCfgConfirma = 0;   // "certeza?" expira
+  spr.fillScreen(TFT_BLACK);
+  drawTopBar();
+  spr.setFont(&fonts::Font2);
+  spr.setTextDatum(middle_left); spr.setTextColor(TFT_WHITE);
+  spr.drawString("Tela pelo pulso (MPU)", 6, 34);
+
+  const char* nome[3] = { "GRAVAR", TELA_AUTO ? "AUTO sim" : "AUTO nao", mpuCfgConfirma ? "certeza?" : "PADRAO" };
+  const uint16_t cor[3] = { mpuTemRef ? (uint16_t)TFT_NAVY : (uint16_t)TFT_ORANGE,
+                            TELA_AUTO ? (uint16_t)TFT_DARKGREEN : (uint16_t)TFT_MAROON,
+                            mpuCfgConfirma ? (uint16_t)TFT_RED : (uint16_t)0x4208 };
+  spr.setTextDatum(middle_center); spr.setTextColor(TFT_WHITE);
+  for (int k = 0; k < 3; k++) {
+    spr.fillRoundRect(MC_BX[k], MC_BY, MC_BW, MC_BH, 8, cor[k]);
+    spr.drawString(nome[k], MC_BX[k] + MC_BW / 2, MC_BY + MC_BH / 2);
+  }
+
+  drawMpuBarra(0);
+  drawMpuBarra(1);
+
+  // estado ao vivo
+  char b[40];
+  int y = MC_BAR_Y[1] + MC_BAR_H + 10;
+  spr.setTextDatum(top_left);
+  if (!mpuOk)          { spr.setTextColor(TFT_RED);    spr.drawString("MPU nao responde", 6, y); }
+  else if (!mpuTemRef) { spr.setTextColor(TFT_YELLOW); spr.drawString("Sem posicao: toque GRAVAR", 6, y); }
+  else {
+    bool acende = mpuAngulo < mpuAngLiga, apaga = mpuAngulo > mpuAngApaga;
+    snprintf(b, sizeof(b), "agora: %.0f graus -> %s", mpuAngulo,
+             acende ? "acenderia" : apaga ? "apagaria" : "mantem");
+    spr.setTextColor(acende ? TFT_GREEN : apaga ? TFT_RED : TFT_YELLOW);
+    spr.drawString(b, 6, y);
+  }
+  spr.setTextColor(COL_DIM);
+  spr.drawString("GRAVAR = posicao de olhar", 6, y + 22);
+  spr.drawString("PADRAO = angulos de fabrica", 6, y + 40);
+
+  spr.fillRoundRect(4, MC_VOLTAR_Y, 232, MC_VOLTAR_H, 8, TFT_NAVY);
+  spr.setTextDatum(middle_center); spr.setTextColor(TFT_WHITE);
+  spr.drawString("VOLTAR", 120, MC_VOLTAR_Y + MC_VOLTAR_H / 2);
+  spr.pushSprite(0, 0);
+}
+
+static void mpuCfgSalvar() {
+  prefs.begin("s16cfg", false);
+  prefs.putFloat("mpu_liga", mpuAngLiga); prefs.putFloat("mpu_apaga", mpuAngApaga);
+  prefs.end();
+  Serial.printf("mpu: acende abaixo de %.0f, apaga acima de %.0f (salvo)\n", mpuAngLiga, mpuAngApaga);
+}
+
+// Qual barra esta sob (x,y)? 0 = acende, 1 = apaga, -1 = nenhuma
+static int mpuCfgHitBarra(int x, int y) {
+  for (int i = 0; i < 2; i++) if (y >= MC_BAR_Y[i] && y < MC_BAR_Y[i] + MC_BAR_H) return i;
+  return -1;
+}
+static void mpuCfgArrasta(int i, int x) {
+  float t = constrain((float)(x - MC_TR_X1) / (MC_TR_X2 - MC_TR_X1), 0.0f, 1.0f);
+  float v = roundf(MC_MIN[i] + t * (MC_MAX[i] - MC_MIN[i]));
+  if (i == 0) { mpuAngLiga = v;  if (mpuAngApaga < mpuAngLiga + 5) mpuAngApaga = mpuAngLiga + 5; }   // 5 graus de folga
+  else        { mpuAngApaga = v; if (mpuAngLiga > mpuAngApaga - 5) mpuAngLiga = mpuAngApaga - 5; }
+}
+
+static void tocarMpuCfg(int x, int y) {
+  if (y >= MC_VOLTAR_Y) { modoTela = TELA_NORMAL; page = 1; Serial.println("Tela 1"); return; }   // volta pra principal
+  if (y < MC_BY || y >= MC_BY + MC_BH) return;
+  if (x < MC_BX[1]) { mpuSalvarRef(); somBipe(); }
+  else if (x < MC_BX[2]) comandoConfig(String("TELA_AUTO ") + (TELA_AUTO ? "off" : "on"));
+  else if (!mpuCfgConfirma) mpuCfgConfirma = millis();          // 1o toque: pede confirmacao
+  else {                                                          // 2o toque: confirma
+    mpuAngLiga = MPU_ANG_LIGA; mpuAngApaga = MPU_ANG_APAGA; mpuCfgConfirma = 0;
+    mpuCfgSalvar();
+  }
+}
+
+// ---------- Tela da BUZINA EXTERNA (aberta pelos Ajustes) ----------
+// As 7 funcoes do controle original, mandadas com a identidade do display (00 9F 1D):
+//   [        BUZINA        ]
+//   [ volume - ] [ volume + ]
+//   [  < som   ] [  som >   ]   (= segurar vol+ / vol- no controle: troca o som)
+//   [alarme liga][alarme desl]
+//   [        VOLTAR        ]
+static const uint8_t BX_CMD[7]  = { 0xAA, 0xCC, 0x99, 0x66, 0xFF, 0x55, 0x33 };
+static const char*   BX_NOME[7] = { "BUZINA", "volume -", "volume +", "< som", "som >", "alarme liga", "alarme desliga" };
+static const int BX_X[2] = { 6, 124 }, BX_W = 110, BX_H = 46, BX_Y0 = 108, BX_DY = 52;
+static const int BX_BUZ_Y = 50, BX_BUZ_H = 50, BX_VOLTAR_Y = 270, BX_VOLTAR_H = 44;
+static int      bxAceso = -1;           // botao tocado (destaque rapido)
+static uint32_t bxAcesoAte = 0;
+
+// Agenda um comando para a buzina externa (sai quando o radio 433 liberar; ver buzExtLoop)
+static void buzExtEnviar(uint8_t cmd) { buzExtCmd = cmd; buzExtPend = true; }
+
+static void bxRet(int i, int& x, int& y, int& w, int& h) {   // retangulo do botao i
+  if (i == 0) { x = 6; y = BX_BUZ_Y; w = 228; h = BX_BUZ_H; return; }
+  x = BX_X[(i - 1) % 2]; y = BX_Y0 + ((i - 1) / 2) * BX_DY; w = BX_W; h = BX_H;
+}
+
+static void drawBuzExt() {
+  spr.fillScreen(TFT_BLACK);
+  drawTopBar();
+  spr.setFont(&fonts::Font2);
+  spr.setTextDatum(middle_left); spr.setTextColor(TFT_WHITE);
+  spr.drawString("Buzina externa (433)", 6, 34);
+  spr.setTextDatum(middle_center);
+  for (int i = 0; i < 7; i++) {
+    int x, y, w, h; bxRet(i, x, y, w, h);
+    bool aceso = (i == bxAceso && millis() < bxAcesoAte);
+    uint16_t fundo = aceso ? (uint16_t)0x6B4D : (i == 0) ? (uint16_t)0x7800 : (uint16_t)0x2124;
+    spr.fillRoundRect(x, y, w, h, 8, fundo);
+    spr.drawRoundRect(x, y, w, h, 8, i == 0 ? TFT_ORANGE : COL_FRAME);
+    spr.setTextColor(TFT_WHITE);
+    spr.drawString(BX_NOME[i], x + w / 2, y + h / 2);
+  }
+  spr.fillRoundRect(6, BX_VOLTAR_Y, 228, BX_VOLTAR_H, 8, TFT_NAVY);
+  spr.drawString("VOLTAR", 120, BX_VOLTAR_Y + BX_VOLTAR_H / 2);
+  spr.pushSprite(0, 0);
+}
+
+static void tocarBuzExt(int x, int y) {
+  if (y >= BX_VOLTAR_Y) { modoTela = TELA_NORMAL; page = 1; Serial.println("Tela 1"); return; }
+  for (int i = 0; i < 7; i++) {
+    int bx, by, bw, bh; bxRet(i, bx, by, bw, bh);
+    if (x < bx || x >= bx + bw || y < by || y >= by + bh) continue;
+    bxAceso = i; bxAcesoAte = millis() + 250;
+    logEvent("buzina externa: %s", BX_NOME[i]);
+    buzExtEnviar(BX_CMD[i]);
+    if (i == 0) hornFlashUntil = millis() + 600;
+    return;
+  }
+}
+
 static void drawPage() {
+  if (modoTela == TELA_AJUSTES) { drawAjustes(); return; }
+  if (modoTela == TELA_MPU)     { drawMpuCfg();  return; }
+  if (modoTela == TELA_BUZEXT)  { drawBuzExt();  return; }
   if (page == 0) drawBms();
   else if (page == 2) drawControls();
   else if (page == 3) drawPiscas();
@@ -1737,10 +2168,14 @@ static void drawPage() {
 }
 
 // ---------- Touch: deslizar troca de tela, toque aperta botao ----------
+// Roda sempre (com ou sem roda): sem a roda, so a cortina de Ajustes funciona.
+//   arrastar pra BAIXO comecando na barra de cima -> abre os Ajustes
+//   arrastar pra CIMA com os Ajustes abertos       -> fecha
 static void handleTouch() {
   static bool dedo = false;
   static bool acordouComToque = false;            // o toque que acendeu a tela nao aperta botao
   static int arrastaSlider = 0;                   // slider do Dream sendo arrastado (1/2) ou 0
+  static int arrastaMpu = -1;                     // barra da tela do MPU sendo arrastada (0/1) ou -1
   static int x0, y0, xu, yu;
   static uint32_t t0;
   int32_t x, y;
@@ -1750,26 +2185,43 @@ static void handleTouch() {
       dedo = true; x0 = x; y0 = y; t0 = millis();
       acordouComToque = !telaAcesa;                // estava apagada? este toque so acende
       if (!telaAcesa) { telaAcesa = true; tft.setBrightness(MPU_BRILHO); }
-      // comecou em cima de um slider do Dream? entao e arrasto, nao swipe de tela
-      arrastaSlider = (!acordouComToque && page == 4) ? dreamHitSlider(x, y) : 0;
+      // comecou em cima de um slider/barra? entao e arrasto, nao swipe de tela
+      arrastaSlider = 0; arrastaMpu = -1;
+      if (!acordouComToque) {
+        if (modoTela == TELA_MPU) arrastaMpu = mpuCfgHitBarra(x, y);
+        else if (modoTela == TELA_NORMAL && page == 4) arrastaSlider = dreamHitSlider(x, y);
+      }
     }
     xu = x; yu = y;
     if (arrastaSlider) dreamArrastaSlider(arrastaSlider, x);   // arrasto ao vivo
+    if (arrastaMpu >= 0) mpuCfgArrasta(arrastaMpu, x);
     return;
   }
   if (!dedo) return;
   dedo = false;                                   // o dedo acabou de soltar
-  if (acordouComToque) { acordouComToque = false; arrastaSlider = 0; return; }
+  if (acordouComToque) { acordouComToque = false; arrastaSlider = 0; arrastaMpu = -1; return; }
   if (arrastaSlider) {                                 // era arrasto de slider: manda o valor final e sai
     if (arrastaSlider == 1) dreamReaplicar(); else if (dreamModo == 1) dreamEnviarEfeito();
     arrastaSlider = 0; return;                         // nem swipe nem toque
   }
+  if (arrastaMpu >= 0) { mpuCfgSalvar(); arrastaMpu = -1; return; }   // salva ao soltar
+
   int dx = xu - x0, dy = yu - y0;
+  bool vertical = abs(dy) > 50 && abs(dy) > abs(dx);
+  bool toque = abs(dx) < 15 && abs(dy) < 15 && millis() - t0 < 600;
+  // cortina: puxa de cima (comecando na barra) / empurra pra cima
+  if (modoTela == TELA_NORMAL && vertical && dy > 0 && y0 < 30) { abrirAjustes(); return; }
+  if (modoTela == TELA_AJUSTES && vertical && dy < 0) { fecharAjustes(); return; }
+  if (modoTela == TELA_AJUSTES) { if (toque) tocarAjustes(x0, y0); return; }
+  if (modoTela == TELA_MPU)     { if (toque) tocarMpuCfg(x0, y0); return; }
+  if (modoTela == TELA_BUZEXT)  { if (toque) tocarBuzExt(x0, y0); return; }
+
+  if (!(client && client->isConnected())) return;   // sem roda: paginas paradas (so a cortina)
   if (abs(dx) > 60 && abs(dx) > abs(dy)) {        // deslizou na horizontal
     if (dx < 0 && page < NUM_PAGES - 1) page++;   // para a esquerda: tela da direita
     if (dx > 0 && page > 0) page--;
     Serial.printf("Tela %d\n", page);
-  } else if (abs(dx) < 15 && abs(dy) < 15 && millis() - t0 < 600) {   // foi um toque
+  } else if (toque) {                             // foi um toque
     if (page == 2) tocarControles(x0, y0);
     else if (page == 3) tocarPiscas(x0, y0);
     else if (page == 4) tocarDream(x0, y0);
@@ -1885,6 +2337,42 @@ static void dreamLoop() {
   }
 }
 
+// ================= 433 MHz: RECEBER o controle da buzina (SRX882S no IO3) =================
+// O receptor solta ruido o tempo todo quando nao ha sinal, entao a interrupcao roda
+// direto - por isso ela e curtinha e decodifica "na hora", borda a borda:
+//   intervalo BAIXO longo (1-20 ms)  = sincronismo: comeca um quadro
+//   par ALTO+BAIXO curto+longo = bit 0, longo+curto = bit 1 (tempos do controle da buzina)
+//   32 bits = quadro completo -> rxCodigo / rxContador (o loop decide o que fazer)
+// Qualquer pulso fora das faixas descarta o quadro (e assim o ruido nunca vira codigo).
+static volatile uint32_t rxCodigo = 0;     // ultimo quadro valido (32 bits)
+static volatile uint32_t rxContador = 0;   // +1 a cada quadro valido
+static const uint16_t RX_CURTO_MIN = 200, RX_CURTO_MAX = 600, RX_LONGO_MIN = 700, RX_LONGO_MAX = 1150;
+static const uint32_t RX_SINC_MIN = 1000, RX_SINC_MAX = 20000;
+
+void IRAM_ATTR rx433ISR() {
+  static uint32_t tAnt = 0, bits = 0, altoAnt = 0;
+  static int nb = -1;                         // bits ja lidos; -1 = esperando sincronismo
+  uint32_t agora = micros();
+  uint32_t d = agora - tAnt;
+  tAnt = agora;
+  bool eraAlto = !digitalRead(RX433_PIN);     // o intervalo que acabou tinha o nivel oposto ao atual
+  if (eraAlto) {
+    altoAnt = d;
+    bool ok = (d >= RX_CURTO_MIN && d <= RX_CURTO_MAX) || (d >= RX_LONGO_MIN && d <= RX_LONGO_MAX);
+    if (!ok) nb = -1;
+    return;
+  }
+  // terminou um intervalo BAIXO
+  if (d >= RX_SINC_MIN && d <= RX_SINC_MAX) { nb = 0; bits = 0; return; }   // sincronismo
+  if (nb < 0) return;
+  bool hCurto = altoAnt <= RX_CURTO_MAX, lCurto = d >= RX_CURTO_MIN && d <= RX_CURTO_MAX;
+  bool lLongo = d >= RX_LONGO_MIN && d <= RX_LONGO_MAX;
+  if (hCurto && lLongo)       bits = bits << 1;          // curto + longo = 0
+  else if (!hCurto && lCurto) bits = (bits << 1) | 1;    // longo + curto = 1
+  else { nb = -1; return; }
+  if (++nb == 32) { rxCodigo = bits; rxContador++; nb = -1; }   // o proximo sincronismo reabre
+}
+
 // ================= 433 MHz: imitar o controle dos piscas (STX882 no IO21) =================
 // Independente do BLE e do I2C: usa o periferico RMT, que gera os pulsos sozinho.
 // Protocolo (ver README): 40 bits = 5 bytes [3C 24 06 cmd cmd^05] + pulso curto + ~9 ms.
@@ -1924,8 +2412,14 @@ static void tx433Loop() {
 static void tx433Setup() {
   tx433Ok = rmtInit(TX433_PIN, RMT_TX_MODE, RMT_MEM_NUM_BLOCKS_1, 1000000);   // 1 tick = 1 us
   Serial.printf("433: %s\n", tx433Ok ? "ok (IO21)" : "ERRO ao iniciar o RMT");
-  pinMode(PIN_PISCA_ESQ, INPUT_PULLUP);
-  pinMode(PIN_PISCA_DIR, INPUT_PULLUP);
+  if (BOTOES_PISCA) {
+    pinMode(PIN_PISCA_ESQ, INPUT_PULLUP);
+    pinMode(PIN_PISCA_DIR, INPUT_PULLUP);
+  }
+  // receptor: cada borda do sinal chama a interrupcao, que decodifica sozinha
+  pinMode(RX433_PIN, INPUT);
+  attachInterrupt(digitalPinToInterrupt(RX433_PIN), rx433ISR, CHANGE);
+  Serial.printf("433 rx: escutando o controle no IO%d\n", RX433_PIN);
   prefs.begin("s16cfg", true);
   luzBase = prefs.getInt("luz_base", LUZ_OFF);
   prefs.end();
@@ -1951,16 +2445,139 @@ static void piscaToggle(int lado) {         // 1 esquerda, 2 direita
   }
 }
 // Botoes fisicos IO2/IO3 (independem da roda; funcionam sempre)
+// Antirrepique "reage na hora, rearma so depois de solto de verdade": o 1o contato
+// ja liga o pisca; outro aperto so vale depois de 50 ms SEGUIDOS sem contato.
+// (o antigo aceitava qualquer mudanca apos 30 ms, e um contato que "treme" mais
+//  que isso - fio encostado, botao ruim - virava dois cliques: liga e desliga)
 static void handlePiscaBotoes() {
-  static bool antes[2] = { false, false };
-  static uint32_t tMud[2] = { 0, 0 };
+  static bool armado[2] = { true, true };        // pode aceitar um novo aperto?
+  static uint32_t tContato[2] = { 0, 0 };        // ultimo instante em que encostou
   const int pinos[2] = { PIN_PISCA_ESQ, PIN_PISCA_DIR };
   for (int k = 0; k < 2; k++) {
     bool ap = digitalRead(pinos[k]) == LOW;
-    if (ap != antes[k] && millis() - tMud[k] > 30) {   // antirrepique
-      tMud[k] = millis(); antes[k] = ap;
-      if (ap) piscaToggle(k + 1);                       // so na hora de apertar
+    if (ap) {
+      tContato[k] = millis();                    // qualquer encostada reinicia a contagem
+      if (armado[k]) { armado[k] = false; piscaToggle(k + 1); }   // reage NA HORA
+    } else if (!armado[k] && millis() - tContato[k] > 50) {
+      armado[k] = true;                          // 50 ms solto de verdade: rearma
     }
+  }
+}
+
+// Envia bits crus pelo 433 (ate 40 bits = 10 digitos hexa), no formato do controle
+// da BUZINA: bit 1 = longo+curto, bit 0 = curto+longo; entre as repeticoes, pulso
+// curto + ~1,2 ms. Serve para o teste de parear a buzina com uma identidade nossa:
+//   433 raw 009F1DAA   (buzina, identidade 00 9F 1D em vez da original 00 9F 1C)
+// TEMPOS: os do controle da buzina, medidos na captura (curto ~352, longo ~920 us,
+// proporcao ~2,6). Os dos piscas (330/990, proporcao 3) NAO serviram para ela.
+// Da para testar outros sem regravar:  433 raw 009F1CAA 350 920  (curto longo, em us)
+// (BUZ_CURTO/BUZ_LONGO/BUZ_INTERVALO estao la em cima: o console usa)
+static void tx433Raw(const char* hex, uint16_t curto, uint16_t longo) {
+  if (curto < 100 || curto > 2000 || longo < 100 || longo > 5000) { Serial.println("433 raw: tempos fora da faixa"); return; }
+  int nd = strlen(hex);
+  if (nd < 1 || nd > 10) { Serial.println("433 raw: use de 1 a 10 digitos hexa (ex.: 433 raw 009F1DAA)"); return; }
+  if (!tx433Ok) { Serial.println("433: sem RMT"); return; }
+  if (millis() < tx433LivreEm) { Serial.println("433: radio ocupado, tente de novo"); return; }
+  const int nbits = nd * 4;
+  int k = 0;
+  for (int r = 0; r < TX433_REPET; r++) {
+    for (int d = 0; d < nd; d++) {
+      char c = hex[d];
+      int val = (c >= '0' && c <= '9') ? c - '0'
+              : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+              : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+      if (val < 0) { Serial.printf("433 raw: '%c' nao e hexa\n", c); return; }
+      for (int i = 3; i >= 0; i--) {
+        bool um = (val >> i) & 1;
+        tx433Simb[k].level0 = 1; tx433Simb[k].duration0 = um ? longo : curto;
+        tx433Simb[k].level1 = 0; tx433Simb[k].duration1 = um ? curto : longo;
+        k++;
+      }
+    }
+    tx433Simb[k].level0 = 1; tx433Simb[k].duration0 = curto;          // pulso final + intervalo
+    tx433Simb[k].level1 = 0; tx433Simb[k].duration1 = BUZ_INTERVALO;
+    k++;
+  }
+  rmtWriteAsync(TX433_PIN, tx433Simb, k);       // k <= 12 x 41: cabe no mesmo buffer dos piscas
+  uint32_t quadroUs = (uint32_t)nbits * (curto + longo) + curto + BUZ_INTERVALO;
+  tx433LivreEm = millis() + quadroUs * TX433_REPET / 1000 + 60;
+  Serial.printf("[433] raw %s (%d bits, curto %u / longo %u us) x%d\n", hex, nbits, curto, longo, TX433_REPET);
+}
+
+// Manda o comando agendado da buzina externa assim que o radio liberar
+static void buzExtLoop() {
+  if (!buzExtPend || !tx433Ok || millis() < tx433LivreEm) return;
+  buzExtPend = false;
+  char hx[12];
+  snprintf(hx, sizeof(hx), "%06lX%02X", (unsigned long)BUZ_EXT_ID, buzExtCmd);
+  tx433Raw(hx, BUZ_CURTO, BUZ_LONGO);
+}
+
+// ---- Controle da buzina como entrada do display ----
+// A buzina externa foi pareada com a identidade do DISPLAY (00 9F 1D) e nao obedece mais
+// o controle (00 9F 1C): o controle agora so fala com o display, que decide o que fazer.
+//   botao buzina (AA)   -> buzina da RODA (Bluetooth: age na hora)
+//   volume + (99)       -> pisca ESQUERDA  (433: age quando soltar o botao)
+//   volume - (CC)       -> pisca DIREITA   (433: idem)
+//   cadeado aberto (33) -> buzina EXTERNA, o display manda 00 9F 1D AA (433: idem)
+//   cadeado fechado (55)-> DESLIGA o alarme da buzina externa (00 9F 1D 33) (433: idem)
+//   segurar vol+ (66) / vol- (FF) -> livres por enquanto
+// Por que "quando soltar": enquanto o dedo esta no botao o controle continua
+// transmitindo; se o display transmitir junto, os dois sinais se embaralham no ar
+// e a buzina externa/os piscas nao entendem (era o "funciona as vezes").
+static bool rx433UsaRadio(uint8_t cmd) { return cmd == 0x99 || cmd == 0xCC || cmd == 0x33 || cmd == 0x55; }
+
+static void rx433Acao(uint32_t cod) {
+  uint8_t cmd = cod & 0xFF;
+  switch (cmd) {
+    case 0xAA:
+      logEvent("controle: buzina da roda");
+      sendKs(0x88, 0, 0, 0, 0);
+      hornFlashUntil = millis() + 600;
+      break;
+    case 0x99: logEvent("controle: pisca esquerda"); piscaToggle(1); break;
+    case 0xCC: logEvent("controle: pisca direita");  piscaToggle(2); break;
+    case 0x33:
+      logEvent("controle: buzina externa");
+      buzExtEnviar(0xAA);
+      hornFlashUntil = millis() + 600;
+      break;
+    case 0x55:
+      logEvent("controle: desliga alarme da buzina externa");
+      buzExtEnviar(0x33);
+      break;
+    default:
+      Serial.printf("[433 rx] botao %02X sem funcao\n", cmd);
+      break;
+  }
+}
+
+// Um aperto manda o mesmo quadro varias vezes seguidas (~40 ms cada). So age depois de
+// 2 quadros iguais (contra ruido) e UMA vez por aperto: outro aperto do mesmo botao so
+// conta depois de 300 ms sem quadros dele (soltou).
+// Acoes que usam o radio 433 ficam guardadas ate o controle PARAR de transmitir
+// (150 ms sem quadros = soltou o botao) - ver rx433UsaRadio.
+static const uint32_t RX_SOLTOU_MS = 150;
+static void rx433Loop() {
+  static uint32_t visto = 0, ultimo = 0, tUltimo = 0, pendente = 0;
+  static int repet = 0;
+  static bool agiu = false;
+  if (pendente && millis() - tUltimo > RX_SOLTOU_MS) {   // controle calou: agora o ar esta livre
+    uint32_t p = pendente; pendente = 0;
+    rx433Acao(p);
+  }
+  uint32_t c = rxContador;
+  if (c == visto) return;
+  visto = c;
+  uint32_t cod = rxCodigo;
+  if ((cod >> 8) != CONTROLE_ID) return;       // outro aparelho (piscas, o proprio display...)
+  if (cod == ultimo && millis() - tUltimo < 300) repet++;
+  else { ultimo = cod; repet = 1; agiu = false; }
+  tUltimo = millis();
+  if (!agiu && repet >= 2) {
+    agiu = true;
+    if (rx433UsaRadio(cod & 0xFF)) pendente = cod;   // espera soltar
+    else rx433Acao(cod);                             // Bluetooth: na hora
   }
 }
 
@@ -2098,6 +2715,8 @@ static void mpuSetup() {
   prefs.begin("s16cfg", true);
   mpuTemRef = prefs.getBool("mpu_tem", false);
   mpuRx = prefs.getFloat("mpu_rx", 0); mpuRy = prefs.getFloat("mpu_ry", 0); mpuRz = prefs.getFloat("mpu_rz", 1);
+  mpuAngLiga  = prefs.getFloat("mpu_liga", MPU_ANG_LIGA);
+  mpuAngApaga = prefs.getFloat("mpu_apaga", MPU_ANG_APAGA);
   prefs.end();
   mpuEscrever(0x6B, 0x80); delay(100);            // reset
   mpuOk = mpuEscrever(0x6B, 0x01);                // acorda
@@ -2117,23 +2736,230 @@ static void mpuAtualizar() {
   if (!mpuOk || agora - tLer < 20) return;        // ~50 leituras/s bastam para a tela
   tLer = agora;
   mpuLerAccel();
+  if (mpuTemRef) mpuAngulo = mpuAnguloAteRef();   // sempre (a tela do MPU mostra ao vivo)
   if (!TELA_AUTO || !mpuTemRef) { if (!telaAcesa) { telaAcesa = true; tft.setBrightness(MPU_BRILHO); } return; }
 
-  mpuAngulo = mpuAnguloAteRef();
-  if (mpuAngulo < MPU_ANG_LIGA)  { if (!desdeNa)   desdeNa = agora; }   else desdeNa = 0;
-  if (mpuAngulo > MPU_ANG_APAGA) { if (!desdeFora) desdeFora = agora; } else desdeFora = 0;
+  if (mpuAngulo < mpuAngLiga)  { if (!desdeNa)   desdeNa = agora; }   else desdeNa = 0;
+  if (mpuAngulo > mpuAngApaga) { if (!desdeFora) desdeFora = agora; } else desdeFora = 0;
 
   if (!telaAcesa && desdeNa && agora - desdeNa >= MPU_T_LIGAR) {
     telaAcesa = true; tft.setBrightness(MPU_BRILHO);
   }
-  if (telaAcesa && desdeFora && agora - desdeFora >= MPU_T_APAGAR && agora - mpuUltimoToque >= MPU_T_TOQUE) {
+  // com os Ajustes ou a tela do MPU abertos ela nao apaga (da pra testar olhando)
+  if (telaAcesa && modoTela == TELA_NORMAL && desdeFora && agora - desdeFora >= MPU_T_APAGAR &&
+      agora - mpuUltimoToque >= MPU_T_TOQUE) {
     telaAcesa = false; tft.setBrightness(0);
   }
 }
 
+// ================= BATERIA do display (IO9, divisor 2:1) =================
+// Curva aproximada de uma celula LiPo/18650 em repouso (tensao -> %).
+// Com carga a tensao cai um pouco, entao o % e uma estimativa.
+static int batPorcento(float v) {
+  static const float TAB[][2] = { {4.20f, 100}, {4.10f, 90}, {4.00f, 80}, {3.92f, 70}, {3.86f, 60},
+                                {3.82f, 50},  {3.79f, 40}, {3.76f, 30}, {3.73f, 20}, {3.69f, 10},
+                                {3.60f, 5},   {3.30f, 0} };
+  const int N = sizeof(TAB) / sizeof(TAB[0]);
+  if (v >= TAB[0][0]) return 100;
+  for (int i = 1; i < N; i++)
+    if (v >= TAB[i][0]) {                          // entre T[i] e T[i-1]: interpola
+      float f = (v - TAB[i][0]) / (TAB[i - 1][0] - TAB[i][0]);
+      return (int)(TAB[i][1] + f * (TAB[i - 1][1] - TAB[i][1]) + 0.5f);
+    }
+  return 0;
+}
+
+// USB ligado num computador? O USB nativo do ESP32-S3 recebe um "sinal de vida" do PC
+// a cada 1 ms. Carregador de parede/powerbank NAO manda isso (so energia).
+static bool usbPcLigado() {
+#if ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
+  return Serial.isPlugged();
+#else
+  return false;
+#endif
+}
+
+// "Degrau" de tensao que conta como ligar/desligar o carregador (ver batLoop).
+// Se o icone de carregando errar, e este numero que se ajusta.
+static const float BAT_DEGRAU = 0.06f;
+// Carregando, a tensao nao cai: se cair isso abaixo do maximo visto desde que
+// "comecou a carregar", foi alarme falso (ou o carregador terminou) -> desliga o raio.
+static const float BAT_CAIU = 0.04f;
+
+// A cada 0,5 s: le, filtra e calcula o %. Abaixo de 2,5 V = "sem bateria" (fio solto /
+// so no USB). Bateria baixa (< 3,35 V): alarme uma vez e evento no log.
+// CARREGANDO: a placa nao tem um pino que avise, entao usamos dois sinais:
+//  1) USB num computador (usbPcLigado) -> com certeza tem 5 V -> carregando.
+//  2) "degrau" na tensao: ao ligar o carregador a placa passa a rodar pelo USB e a
+//     bateria so recebe carga -> a tensao SOBE de repente; ao tirar, CAI de repente.
+//     Compara a media das 2 leituras mais novas com a das 2 de ~4 s atras.
+//  PEGADINHA (13/10): bipe/alarme e transmissao 433 puxam corrente e a tensao AFUNDA;
+//  quando acabam, ela VOLTA de repente - parece o degrau do carregador e o raio ficava
+//  preso. Por isso: (a) degraus durante som/433 e ate 4 s depois sao ignorados;
+//  (b) com o raio aceso (sem PC), se a tensao cair BAT_CAIU abaixo do maximo visto, apaga.
+static void batLoop() {
+  static uint32_t t = 0, tRuido = 0;
+  static float hist[8];                    // leituras cruas dos ultimos ~4 s
+  static int hi = 0;
+  static float maxCarga = 0;               // maior tensao vista desde que "comecou a carregar"
+  if (somModo != SOM_NADA || millis() < tx433LivreEm) tRuido = millis();   // carga extra agora
+  if (millis() - t < 500) return;
+  t = millis();
+  float v = analogReadMilliVolts(BAT_PIN) * 2 / 1000.0f;
+  if (batV == 0) for (int i = 0; i < 8; i++) hist[i] = v;   // 1a leitura: sem degrau falso
+  hist[hi] = v; hi = (hi + 1) % 8;
+  batV = (batV == 0) ? v : batV + 0.2f * (v - batV);
+  batPct = (batV < 2.5f) ? -1 : batPorcento(batV);
+
+  float novas = (hist[(hi + 7) % 8] + hist[(hi + 6) % 8]) / 2;   // as 2 mais recentes
+  float velhas = (hist[hi] + hist[(hi + 1) % 8]) / 2;             // as 2 mais antigas
+  bool pc = usbPcLigado();
+  bool antes = batCarregando;
+  bool quieto = millis() - tRuido > 4000;  // sem som/433 ha 4 s: degraus valem
+  if (batPct >= 0 && quieto) {
+    if (novas - velhas > BAT_DEGRAU) batCarregando = true;
+    else if (velhas - novas > BAT_DEGRAU) batCarregando = false;
+  }
+  if (batCarregando && !pc) {              // autocorrecao: carregando, a tensao nao cai
+    if (batV > maxCarga) maxCarga = batV;  // (filtrada: a crua oscila +-15 mV)
+    if (maxCarga - batV > BAT_CAIU) batCarregando = false;
+  }
+  if (pc) batCarregando = true;
+  else if (usbPC) batCarregando = false;  // acabou de sair do computador
+  usbPC = pc;
+  if (batCarregando != antes) {
+    for (int i = 0; i < 8; i++) hist[i] = v;   // zera a comparacao (nao dispara de novo)
+    maxCarga = batV;
+    logEvent("bateria: %s (%.2f V%s)", batCarregando ? "carregando" : "na bateria", v, pc ? ", USB do PC" : "");
+  }
+
+  if (batPct >= 0 && !batCarregando && batV < 3.35f && !batAvisouBaixa) {
+    batAvisouBaixa = true;
+    somAlarme();
+    logEvent("bateria do display baixa: %.2f V", batV);
+  }
+  if (batV > 3.50f) batAvisouBaixa = false;      // carregou: pode avisar de novo
+}
+
+// ================= DORMIR (deep sleep) =================
+// Fecha a gravacao, grava os eventos, apaga as lanternas (433), mostra o aviso e dorme.
+// Pinos que precisam ficar FIXOS durante o sono: luz de fundo (IO45) em 0 e o
+// amplificador (IO1) desligado (1) - solto, ele poderia ligar e gastar bateria.
+static void dormir(const char* motivo) {
+  Serial.printf("[sono] dormindo: %s (acorda no BOOT)\n", motivo);
+  logEvent("dormindo: %s", motivo);
+  stopRideLog();
+  writeEvents();                                    // grava os eventos pendentes no cartao
+  if (tx433Ok && (piscaAtivo || luzBase != LUZ_OFF)) {   // apaga as lanternas (as outras pilhas agradecem)
+    while (millis() < tx433LivreEm) delay(10);
+    tx433Enviar(CMD_LUZ_OFF); tx433Loop();
+    while (millis() < tx433LivreEm) delay(10);
+  }
+  telaAcesa = true; tft.setBrightness(MPU_BRILHO);
+  spr.fillScreen(TFT_BLACK);
+  spr.setTextDatum(middle_center);
+  spr.setFont(&fonts::FreeSansBold12pt7b); spr.setTextColor(TFT_WHITE);
+  spr.drawString("Dormindo", 120, 130);
+  spr.setFont(&fonts::Font2); spr.setTextColor(COL_DIM);
+  spr.drawString(motivo, 120, 165);
+  spr.setTextColor(TFT_YELLOW);
+  spr.drawString("aperte BOOT para ligar", 120, 195);
+  spr.pushSprite(0, 0);
+  delay(2500);
+
+  lgfx::i2c::writeRegister8(0, 0x38, 0xA5, 0x03, 0, 400000);   // touch em hibernacao
+  if (mpuOk) mpuEscrever(0x6B, 0x40);                          // MPU dorme
+  tft.sleep();
+  digitalWrite(SOM_AMP_EN, HIGH);                              // amplificador desligado...
+  gpio_hold_en((gpio_num_t)SOM_AMP_EN);                        // ...e preso assim
+  gpio_reset_pin(GPIO_NUM_45);                                 // luz de fundo presa em 0
+  gpio_set_direction(GPIO_NUM_45, GPIO_MODE_OUTPUT);
+  gpio_set_level(GPIO_NUM_45, 0);
+  gpio_hold_en(GPIO_NUM_45);
+  gpio_deep_sleep_hold_en();
+  rtc_gpio_pullup_en(GPIO_NUM_0);                              // BOOT acorda
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
+  Serial.flush();
+  esp_deep_sleep_start();
+}
+
+// Decide se e hora de dormir. Fica acordado enquanto: roda conectada, USB/carregador
+// ligado (ou sem bateria = so no USB) ou alguem tocou na tela nos ultimos 10 min.
+static void sonoLoop() {
+  static uint32_t ativoEm = 0, baixaDesde = 0;
+  uint32_t agora = millis();
+  bool roda = client && client->isConnected();
+  bool tomada = usbPC || batCarregando || batPct < 0;
+  if (roda || tomada || ativoEm == 0) ativoEm = agora;
+  if (mpuUltimoToque > ativoEm) ativoEm = mpuUltimoToque;     // tocou na tela
+  if (agora - ativoEm >= DORMIR_SEM_RODA_MS) dormir("10 min sem roda e sem USB");
+  if (batPct >= 0 && !batCarregando && !usbPC && batV < BAT_CORTE_V) { if (!baixaDesde) baixaDesde = agora; }
+  else baixaDesde = 0;
+  if (baixaDesde && agora - baixaDesde > 30000) dormir("bateria no fim");
+}
+
+// ================= PRINT da tela -> BMP no cartao (/prints/print_NNN.bmp) =================
+// Copia o sprite (o quadro inteiro que vai pra tela) pixel a pixel, em BMP de 24 bits
+// (abre em qualquer visualizador). Leva ~1 s; a ponte BLE segue pela tarefa dela.
+static void salvarPrint() {
+  if (!sdOk) { Serial.println("[print] sem cartao SD"); return; }
+  SD_MMC.mkdir("/prints");
+  char nome[40];
+  for (int i = 1; i < 1000; i++) {
+    snprintf(nome, sizeof(nome), "/prints/print_%03d.bmp", i);
+    if (!SD_MMC.exists(nome)) break;
+  }
+  File f = SD_MMC.open(nome, FILE_WRITE);
+  if (!f) { Serial.printf("[print] erro ao criar %s\n", nome); return; }
+  const int W = 240, H = 320;
+  const uint32_t dados = (uint32_t)W * 3 * H;   // 720 bytes por linha (ja e multiplo de 4)
+  uint8_t cab[54] = { 0 };
+  auto p32 = [&](int i, uint32_t v) { cab[i] = v; cab[i + 1] = v >> 8; cab[i + 2] = v >> 16; cab[i + 3] = v >> 24; };
+  cab[0] = 'B'; cab[1] = 'M';
+  p32(2, 54 + dados);  // tamanho do arquivo
+  p32(10, 54);         // onde comecam os pixels
+  p32(14, 40);         // tamanho do cabecalho de informacao
+  p32(18, W); p32(22, H);
+  cab[26] = 1;         // planos
+  cab[28] = 24;        // bits por pixel
+  p32(34, dados);
+  f.write(cab, sizeof(cab));
+  static uint8_t lin[240 * 3];
+  for (int y = H - 1; y >= 0; y--) {             // o BMP guarda as linhas de baixo pra cima
+    for (int x = 0; x < W; x++) {
+      uint16_t c = spr.readPixel(x, y);          // RGB565
+      uint8_t r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+      lin[x * 3 + 0] = (b << 3) | (b >> 2);      // ... e cada pixel como B, G, R
+      lin[x * 3 + 1] = (g << 2) | (g >> 4);
+      lin[x * 3 + 2] = (r << 3) | (r >> 2);
+    }
+    f.write(lin, sizeof(lin));
+  }
+  f.close();
+  Serial.printf("[print] salvo: %s\n", nome);
+  logEvent("print: %s", nome);
+  somBipe();
+}
+
+// Dispara o print agendado (botao Print dos Ajustes = 3 s; 'print' no Serial = ja)
+static void printLoop() {
+  if (!printEm || millis() < printEm) return;
+  printEm = 0;
+  bool wheelOk = client && client->isConnected();
+  if (telaAcesa && (wheelOk || modoTela != TELA_NORMAL)) drawPage();   // quadro atualizado
+  salvarPrint();
+}
+
 // ================= Setup / Loop =================
 void setup() {
+  // voltando do sono: solta os pinos que ficaram presos (luz de fundo e amplificador)
+  gpio_hold_dis(GPIO_NUM_45);
+  gpio_hold_dis((gpio_num_t)SOM_AMP_EN);
+  gpio_deep_sleep_hold_dis();
   Serial.begin(115200);
+  delay(300);
+  Serial.printf("\n=== S16 Companion ponte %s ===\n", VERSAO);
+  Serial.printf("ligou por: %s\n", esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0 ? "botao BOOT (acordou do sono)" : "energia/reset");
   carregarConfig();
   tft.init();
   tft.setRotation(0);          // retrato, 240x320 (USB-C embaixo; mude para 2 para inverter)
@@ -2242,22 +3068,33 @@ void loop() {
   hidSoltar();
   updateAdvertising();
   mpuAtualizar();              // le o MPU e acende/apaga a tela pela posicao
-  handlePiscaBotoes();         // botoes fisicos dos piscas (IO2/IO3), independem da roda
+  if (BOTOES_PISCA) handlePiscaBotoes();   // botoes fisicos (desligados: agora e o controle 433)
+  rx433Loop();                 // controle 433 (receptor no IO3): buzina, piscas, buzina externa
+  buzExtLoop();                // comando agendado da buzina externa (sai quando o radio libera)
   tx433Loop();                 // manda o comando 433 agendado assim que o radio libera
   dreamLoop();                 // mantem/recupera a conexao com a mochila (Dream), se pedida
+  batLoop();                   // tensao da bateria do display (IO9)
+  pwmPicoAtualizar();          // pico do PWM (conta mesmo com a tela apagada)
+  sonoLoop();                  // 10 min sem roda e sem USB, ou bateria no fim -> dorme (BOOT acorda)
+  printLoop();                 // print da tela agendado (botao Print / comando 'print')
 
   bool wheelOk = client && client->isConnected();
-  if (wheelOk) {
-    handleHornButton();
-    handleTouch();
-  }
+  if (wheelOk) handleHornButton();
+  handleTouch();               // sempre: sem a roda, a cortina de Ajustes ainda funciona
 
   static uint32_t lastDraw = 0;
-  static int lastPage = -1;
+  static int lastPage = -1, lastModo = -1;
+  bool sobreposta = modoTela != TELA_NORMAL;      // Ajustes / tela do MPU
   // nao desenha com a tela apagada (so o backlight some; a ponte segue rodando)
-  if (wheelOk && telaAcesa && (millis() - lastDraw > 100 || page != lastPage)) {   // ~10 quadros/s
+  if ((wheelOk || sobreposta) && telaAcesa &&
+      (millis() - lastDraw > 100 || page != lastPage || modoTela != lastModo)) {   // ~10 quadros/s
     lastDraw = millis();
     lastPage = page;
+    lastModo = modoTela;
     drawPage();
   }
+  // fechou os Ajustes sem a roda conectada: volta a mostrar a mensagem de status
+  static bool sobrepostaAntes = false;
+  if (sobrepostaAntes && !sobreposta && !wheelOk) drawStatus();
+  sobrepostaAntes = sobreposta;
 }
