@@ -99,7 +99,7 @@ ESP32-S3 (16 MB flash, 8 MB PSRAM OPI), tela IPS 2,8" 240×320 (ILI9341V, SPI), 
 | Conector | Pinos | Plano de uso |
 |---|---|---|
 | I2C | 3.3V, GND, IO15 (SCL), IO16 (SDA) | **MPU-6050 (0x68)** no mesmo barramento do touch (0x38) e do codec ES8311 (0x18), usando as funções `lgfx::i2c` da LovyanGFX (testado: 0 erros com o touch em uso) |
-| GPIO | IO21, IO14, IO3, IO2 | IO21 = STX882 (transmissor 433 MHz); IO14 = INT do MPU; **IO3 = DATA do receptor SRX882S** (controle 433); IO2 = livre (era botão do pisca; os botões físicos foram desligados com `BOTOES_PISCA = false`) |
+| GPIO | IO21, IO14, IO3, IO2 | IO21 = STX882 (transmissor 433 MHz); IO14 = INT do MPU (**já ligado**; ainda sem uso no firmware); **IO3 = DATA do receptor SRX882S** (controle 433); IO2 = livre (era botão do pisca; os botões físicos foram desligados com `BOTOES_PISCA = false`) |
 
 **Receptor SRX882S no display:** VCC → 3V3 · GND → GND · **CS → 3V3** (obrigatório: solto = dormindo) · DATA → IO3 · antena espiral. Alimentado em **3,3 V** (não 5 V), para a saída DATA não mandar 5 V no ESP32.
 | UART | 5V, GND, TXD (IO44), RXD (IO43) | livre: 5 V para receptor 433 MHz, ou UART para GPS |
@@ -194,6 +194,7 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 ```
 
 - **Ajustes (cortina de cima):** arraste pra **baixo** começando na barra de cima; arraste pra **cima** para fechar. Funciona **até sem a roda** (bancada). Botões: **MPU >** (abre a config), **Tela auto**, **Som**, **Mochila >** (abre a tela da mochila, com CONECTAR e LIGA/DESLIGA), **Buzina ext. >**, **Print** (salva a tela 3 s depois; a cortina **continua aberta** — deixa ela pra "printar" a própria cortina, ou arrasta pra cima e vai pra outra tela dentro dos 3 s), **Dormir** (2 toques: o 1º pede "certeza?"). Embaixo: bateria (V, % e "carregando"), cartão, sensores e a versão do firmware.
+- **Mochila:** o botão do canto mostra o estado: **CONECTAR** (cinza) → **CONECTANDO...** (enquanto tenta, até 2,5 s) → **PROCURANDO...** (amarelo escuro, entre tentativas; tocar cancela) → **DESCONECTAR** (verde, conectada).
 - **Piscas (cortina de baixo):** nas páginas de deslizar há uma "alça" cinza no meio da borda de baixo; arrastando pra **cima** a partir dela abre a tela dos piscas/luz; arrastando pra **baixo**, fecha. Também funciona sem a roda.
 - **Buzina externa:** as 7 funções do controle original, mandadas com a identidade do display: **BUZINA**, volume −/+, **< som / som >** (= segurar vol+/vol− no controle: troca entre os 4 sons), alarme liga/desliga. Se o rádio 433 estiver ocupado, o comando espera na fila e sai em seguida. VOLTAR = tela principal. ✅ Testado em 12/10 (v5-202610122151): troca de sons funcionando pelo display, piscas na ordem certa pelo controle.
 - **Config do MPU:** **GRAVAR** (com o braço na posição de olhar), **AUTO sim/não**, **PADRÃO** (toque 2×; volta os ângulos 30/50) e as barras *acende abaixo de* / *apaga acima de* (seta amarela = onde o braço está agora). Salva ao soltar o dedo. Com esta tela (ou os Ajustes) aberta a tela não apaga sozinha.
@@ -226,7 +227,7 @@ O display **dorme sozinho** (quase tudo desliga, inclusive o Bluetooth) quando:
 - fica **10 min sem roda e sem USB/carregador** (e sem toque na tela) — na mesa, parado; ou
 - a **bateria chega ao fim**: abaixo de **3,30 V** por 30 s (a placa não protege a célula sozinha).
 
-Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanternas pelo 433 (se estavam acesas) e mostra "Dormindo — aperte BOOT para ligar" por 2,5 s. **Acorda no BOOT** (é um reinício: a ponte começa do zero). Também dá pra mandar dormir pelo botão **Dormir** da cortina (2 toques). **Futuro:** acordar mexendo o braço — fio INT do MPU no IO14 + "modo vigia" do MPU antes de dormir (como no `teste_tela_mpu`); por isso o MPU fica sempre alimentado (o LED dele aceso no sono é normal: é ligado direto na alimentação da plaquinha). Andando ele nunca dorme (roda conectada). Teste: `dormir` no Serial. Ajustes no topo do código: `DORMIR_SEM_RODA_MS`, `BAT_CORTE_V`.
+Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanternas pelo 433 (se estavam acesas) e mostra "Dormindo — aperte BOOT para ligar" por 2,5 s. **Acorda no BOOT** (é um reinício: a ponte começa do zero). Também dá pra mandar dormir pelo botão **Dormir** da cortina (2 toques). **Futuro:** acordar mexendo o braço — o fio INT do MPU **já está ligado no IO14**; falta só o firmware pôr o MPU em "modo vigia" antes de dormir (como no `teste_tela_mpu`) e acordar pelo IO14. Cuidado a decidir: guardado na mochila, ele acordaria o tempo todo (por isso a ideia é uma opção liga/desliga). Por isso o MPU fica sempre alimentado (o LED dele aceso no sono é normal: é ligado direto na alimentação da plaquinha). Andando ele nunca dorme (roda conectada). Teste: `dormir` no Serial. Ajustes no topo do código: `DORMIR_SEM_RODA_MS`, `BAT_CORTE_V`.
 
 ### Controle de mídia (v5 MIDIA)
 
@@ -300,7 +301,7 @@ A roda: `KS-S16P-0254`, série `KSSE61O231020J158`, anuncia como `KSN-S16P--4C4B
 | `A9` | 2–3 tensão (/100 V) · 4–5 velocidade (/100 km/h) · 10–11 corrente (signed, /100 A; **negativa = regeneração/freio**) · 12–13 temperatura da **placa-mãe** (/100 °C) |
 | `B9` | 2–5 trip (u32 "invertido", /1000 km) · 6–7 tempo (s) · 8–9 máxima (/100 km/h) · 12 ventoinha ("Cooling") · 14–15 temperatura do **motor** (confirmado com o app) |
 | `F5` | 14 carga de CPU? · **15 PWM (%)** |
-| `F6` | 2–3 limite de velocidade (/100; começa 20, vira 32) · 14 flags de alarme? (`DA` com PWM alto) |
+| `F6` | 2–3 limite de velocidade (/100; começa 20, vira 32) · 14 flags de alarme? (`DA` com PWM alto). **Pista (14/10):** fica **20 até a roda "armar"** (motor ligado mas desativado → ativa ao pôr o mono em pé, quando os giros entram) e **vira 32 ao armar**; ao desarmar e deitar, **continua 32**. Hipótese: 20 = limite "de partida/segurança" antes do 1º armar. Para investigar: `DUMP_HEX = true`, ligar a roda, armar, desarmar, deitar — e procurar nos frames (F6 e outros) um byte que acompanhe armado/desarmado **nos dois sentidos** (isso daria um ícone "armado" no display). |
 | `F1`/`F2` subtipo `D0` | BMS pack 1/2 (frame longo): [21] nº células, depois tensões (mV), nº de sensores, temperaturas (0,1 K), corrente, tensão, SoC (/10 %) |
 | `C9` | tudo zero |
 

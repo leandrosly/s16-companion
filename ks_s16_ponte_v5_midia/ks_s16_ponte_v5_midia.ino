@@ -1,4 +1,4 @@
-// VERSAO: v5-202610142027   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v5-202610142050   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -64,7 +64,7 @@
 #define USAR_SOM 1
 
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v5-202610142027";
+static const char* VERSAO = "v5-202610142050";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -1843,14 +1843,16 @@ static void drawSliderSpr(int y, const char* nome, int val, int vmax) {
 static void drawDream() {
   spr.fillScreen(TFT_BLACK);
   drawTopBar();
-  const char* st = dreamConectado ? "conectada" : dreamQuer ? "procurando" : "desligada";
+  const char* st = dreamConectado ? "conectada" : dreamConectando ? "conectando..." : dreamQuer ? "procurando" : "desligada";
   spr.setFont(&fonts::Font2); spr.setTextDatum(middle_left);
   spr.setTextColor(dreamConectado ? TFT_GREEN : dreamQuer ? TFT_YELLOW : COL_DIM);
   spr.drawString(st, 6, 34);
-  // botao conectar/desconectar (salvo)
-  spr.fillRoundRect(DCON_X, DCON_Y, DCON_W, DCON_H, 6, dreamQuer ? TFT_DARKGREEN : 0x4208);
+  // botao conectar/desconectar (salvo). Procurando: amarelo escuro "PROCURANDO..." (tocar cancela)
+  const char* bt = dreamConectado ? "DESCONECTAR" : dreamConectando ? "CONECTANDO..." : dreamQuer ? "PROCURANDO..." : "CONECTAR";
+  uint16_t bc = dreamConectado ? (uint16_t)TFT_DARKGREEN : dreamQuer ? (uint16_t)0x8400 : (uint16_t)0x4208;
+  spr.fillRoundRect(DCON_X, DCON_Y, DCON_W, DCON_H, 6, bc);
   spr.setTextDatum(middle_center); spr.setTextColor(TFT_WHITE);
-  spr.drawString(dreamQuer ? "DESCONECTAR" : "CONECTAR", DCON_X + DCON_W / 2, DCON_Y + DCON_H / 2 - 1);
+  spr.drawString(bt, DCON_X + DCON_W / 2, DCON_Y + DCON_H / 2 - 1);
 
   spr.setTextDatum(middle_center);
   spr.fillRoundRect(DRX[0], DON_Y, DR_W + 30, DON_H, 7, dreamLigado ? TFT_DARKGREEN : 0x2124);
@@ -2358,7 +2360,12 @@ static void dreamLoop() {
   if (!dreamCli) { dreamCli = NimBLEDevice::createClient(); dreamCli->setClientCallbacks(&dreamCB, false); }
   dreamCli->setConnectTimeout(2500);
   NimBLEAddress a(std::string(DREAM_MAC), BLE_ADDR_PUBLIC);   // provado: tipo PUBLIC
-  if (dreamCli->connect(a)) {
+  // retorno visual ANTES de travar ate 2,5 s: a tela da mochila mostra "CONECTANDO..."
+  dreamConectando = true;
+  if (modoTela == TELA_DREAM && telaAcesa) drawPage();
+  bool ok = dreamCli->connect(a);
+  dreamConectando = false;
+  if (ok) {
     NimBLERemoteService* svc = dreamCli->getService(DREAM_SVC);
     dreamWr = svc ? svc->getCharacteristic(DREAM_WRCHR) : nullptr;
     if (dreamWr) { dreamConectado = true; dreamFalhas = 0; dreamAplicarPend = true; Serial.println("[dream] conectado (FFD9 ok)"); }
