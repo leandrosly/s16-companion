@@ -1,4 +1,4 @@
-// VERSAO: v5-202610131056   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v5-202610142027   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -33,6 +33,10 @@
   Novidades (13/10/2026):
   - DORME sozinho: 10 min sem roda e sem USB, ou bateria no fim (< 3,30 V). BOOT acorda.
   - Raio de "carregando" nao fica mais preso depois de bipe/alarme/433.
+  Novidades (14/10/2026):
+  - Paginas de deslizar so BMS / principal / controles. PISCAS = cortina de BAIXO
+    (arrastar pra cima a partir da borda, onde fica a "alca"); MOCHILA = botao da cortina.
+  - Botao Dormir na cortina (2 toques). Controle -> 433 responde mais rapido (80 ms).
 
   Bibliotecas: NimBLE-Arduino 2.5.1 COM O PATCH (pasta patch_nimble_2.5.1), LovyanGFX (lovyan03)
   Placa: "ESP32S3 Dev Module"
@@ -60,7 +64,7 @@
 #define USAR_SOM 1
 
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v5-202610131056";
+static const char* VERSAO = "v5-202610142027";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -167,6 +171,7 @@ static const float   MPU_ANG_APAGA = 50;          // PADRAO (graus): longe -> ap
 static float mpuAngLiga = MPU_ANG_LIGA;           // valores em uso (ajustaveis na tela do MPU, salvos)
 static float mpuAngApaga = MPU_ANG_APAGA;
 static uint32_t mpuCfgConfirma = 0;               // 1o toque no PADRAO (pede "certeza?" por 3 s)
+static uint32_t dormirConfirma = 0;               // 1o toque no Dormir da cortina (idem)
 static const uint32_t MPU_T_LIGAR = 250;          // ms na posicao para acender
 static const uint32_t MPU_T_APAGAR = 1500;        // ms fora para apagar
 static const uint32_t MPU_T_TOQUE = 8000;         // ms acesa depois de um toque
@@ -181,7 +186,9 @@ static uint32_t mpuUltimoToque = 0;
 
 // Telas "por cima" das paginas: o painel de Ajustes (puxado de cima) e a config do MPU.
 // (int em vez de enum: o Arduino cria prototipos no topo, antes de um enum existir)
-static const int TELA_NORMAL = 0, TELA_AJUSTES = 1, TELA_MPU = 2, TELA_BUZEXT = 3;
+static const int TELA_NORMAL = 0, TELA_AJUSTES = 1, TELA_MPU = 2, TELA_BUZEXT = 3,
+                 TELA_DREAM = 4,    // mochila: aberta pelo botao "Mochila >" da cortina
+                 TELA_PISCAS = 5;   // piscas: cortina de BAIXO (arrastar pra cima a partir da borda)
 static int modoTela = TELA_NORMAL;
 
 // Print da tela: hora marcada para salvar o BMP (0 = nenhum pedido)
@@ -1345,8 +1352,9 @@ static uint16_t pwmColor(int p) {
   return TFT_RED;
 }
 
-// Telas: 0 = BMS (esquerda), 1 = principal, 2 = controles (direita)
-static const int NUM_PAGES = 5;
+// Telas de deslizar: 0 = BMS (esquerda), 1 = principal, 2 = controles (direita).
+// (piscas e mochila sairam das bolinhas: piscas = cortina de baixo, mochila = botao da cortina)
+static const int NUM_PAGES = 3;
 static int page = 1;
 static uint32_t hornFlashUntil = 0;     // mostra "BUZINA" na barra por um instante
 
@@ -1425,6 +1433,11 @@ static void drawTopBar() {
     spr.setTextColor(TFT_WHITE);
     spr.drawString(buf, 236, 11);
   }
+}
+
+// "Alca" na borda de baixo: indica que da pra puxar a cortina dos piscas dali
+static void drawAlca() {
+  spr.fillRoundRect(100, 315, 40, 4, 2, COL_DIM);
 }
 
 static void drawCell(int x, int y, int w, int h, const char* label, const char* value) {
@@ -1515,7 +1528,7 @@ static void drawData() {
   spr.drawString(buf, 120, by + bh / 2);
 
   // ---- grade de valores (3 linhas x 2 colunas) ----
-  const int gy = 194, cw = 114, ch = 40, gap = 4, x1 = 4, x2 = 4 + cw + gap + 4;
+  const int gy = 192, cw = 114, ch = 38, gap = 4, x1 = 4, x2 = 4 + cw + gap + 4;   // termina em 314: abaixo, a alca
   snprintf(buf, sizeof(buf), "%.1f V", wd.voltage);   drawCell(x1, gy,               cw, ch, "TENSAO", buf);
   snprintf(buf, sizeof(buf), "%.1f A", wd.current);   drawCell(x2, gy,               cw, ch, "CORRENTE", buf);
   snprintf(buf, sizeof(buf), "%.0f C", wd.temp);      drawCell(x1, gy + ch + gap,     cw, ch, "TEMP", buf);
@@ -1523,6 +1536,7 @@ static void drawData() {
   snprintf(buf, sizeof(buf), "%.2f km", wd.tripKm);   drawCell(x1, gy + 2 * (ch + gap), cw, ch, "TRIP", buf);
   snprintf(buf, sizeof(buf), "%.1f", wd.topSpeed);    drawCell(x2, gy + 2 * (ch + gap), cw, ch, "MAX km/h", buf);
 
+  drawAlca();
   spr.pushSprite(0, 0);
 }
 
@@ -1582,6 +1596,7 @@ static void drawBms() {
   if (hi - lo < 50) lo = hi - 50;
   drawBmsPack(0, 28, lo, hi);
   drawBmsPack(1, 176, lo, hi);
+  drawAlca();
   spr.pushSprite(0, 0);
 }
 
@@ -1708,6 +1723,7 @@ static void drawControls() {
     spr.drawRoundRect(x, y, BT_W, BT_H, 10, (layout[i] == IC_LOG && rideLogging) ? TFT_RED : COL_FRAME);
     drawIcone(layout[i], x + BT_W / 2, y + BT_H / 2, TFT_WHITE);
   }
+  drawAlca();
   spr.pushSprite(0, 0);
 }
 
@@ -1790,7 +1806,7 @@ static void drawPiscas() {
   }
   spr.setFont(&fonts::Font2);
   spr.setTextColor(COL_DIM);
-  spr.drawString(tx433Ok ? "433 MHz pronto (IO21)" : "433 sem RMT", 120, 300);
+  spr.drawString(tx433Ok ? "arraste pra baixo: fecha" : "433 sem RMT", 120, 300);
   spr.pushSprite(0, 0);
 }
 
@@ -1811,6 +1827,7 @@ static const int DCON_X = 130, DCON_Y = 24, DCON_W = 106, DCON_H = 22;  // botao
 static const int DON_Y = 52, DON_H = 30;            // liga/desliga (luz)
 static const int DC_Y0 = 88, DC_H = 28, DC_DY = 32; // 2 linhas de cores
 static const int DBRI_Y = 158, DEF_Y = 196, DVEL_Y = 234, DBAR_H = 30;
+static const int DVOLTAR_Y = 274, DVOLTAR_H = 40;  // VOLTAR (a mochila agora abre pela cortina)
 static const int DTR_X1 = 92, DTR_X2 = 232;         // trilho dos sliders
 
 static void drawSliderSpr(int y, const char* nome, int val, int vmax) {
@@ -1865,10 +1882,14 @@ static void drawDream() {
   spr.setTextColor(TFT_WHITE); spr.drawString(dreamDemo ? "parar" : "demo", 207, ey);
 
   drawSliderSpr(DVEL_Y, "veloc", dreamVel, 255);
+  spr.fillRoundRect(6, DVOLTAR_Y, 228, DVOLTAR_H, 8, TFT_NAVY);
+  spr.setFont(&fonts::Font2); spr.setTextDatum(middle_center); spr.setTextColor(TFT_WHITE);
+  spr.drawString("VOLTAR", 120, DVOLTAR_Y + DVOLTAR_H / 2);
   spr.pushSprite(0, 0);
 }
 
 static void tocarDream(int x, int y) {
+  if (y >= DVOLTAR_Y) { modoTela = TELA_NORMAL; page = 1; Serial.println("Tela 1"); return; }   // volta pra principal
   if (x >= DCON_X && y >= DCON_Y && y < DCON_Y + DCON_H) { dreamSetAuto(!dreamQuer); return; }
   if (y >= DON_Y && y < DON_Y + DON_H) { dreamSetLiga(x < 120); return; }
   for (int i = 0; i < 6; i++) {
@@ -1910,12 +1931,13 @@ static void dreamArrastaSlider(int which, int x) {
 }
 
 // ---------- Cortina de AJUSTES (arrastar de cima pra baixo a partir da barra) ----------
-// Grade 2 x 3:   [MPU >]   [Tela auto]
-//                [Som]     [Mochila]
-//                [Print]   [Buzina ext. >]
-// Embaixo: bateria, cartao, sensores. Fecha arrastando pra cima.
-static const int AJ_X[2] = { 6, 124 }, AJ_W = 110, AJ_H = 54, AJ_Y0 = 50, AJ_DY = 60;
-static const int AJ_N = 6;
+// Grade 2 x 4:   [MPU >]       [Tela auto]
+//                [Som]         [Mochila >]
+//                [Buzina ext >][Print]
+//                [Dormir]      (livre)
+// Embaixo: bateria, cartao, sensores, versao. Fecha arrastando pra cima.
+static const int AJ_X[2] = { 6, 124 }, AJ_W = 110, AJ_H = 46, AJ_Y0 = 48, AJ_DY = 52;
+static const int AJ_N = 7;
 
 static void drawBotaoAjuste(int i, const char* titulo, const char* sub, uint16_t fundo, uint16_t corSub) {
   int x = AJ_X[i % 2], y = AJ_Y0 + (i / 2) * AJ_DY;
@@ -1940,33 +1962,36 @@ static void drawAjustes() {
   drawBotaoAjuste(1, "Tela auto", TELA_AUTO ? "sim" : "nao", TELA_AUTO ? LIG : DESL, TELA_AUTO ? TFT_WHITE : COL_DIM);
   drawBotaoAjuste(2, "Som", !somOk ? "sem codec" : SOM_ON ? "sim" : "nao", SOM_ON && somOk ? LIG : DESL,
                   SOM_ON && somOk ? TFT_WHITE : COL_DIM);
-  drawBotaoAjuste(3, "Mochila", dreamConectado ? "conectada" : dreamQuer ? "procurando" : "desligada",
-                  dreamQuer ? LIG : DESL, dreamConectado ? TFT_WHITE : dreamQuer ? TFT_YELLOW : COL_DIM);
+  drawBotaoAjuste(3, "Mochila  >", dreamConectado ? "conectada" : dreamQuer ? "procurando" : "desligada",
+                  TFT_NAVY, dreamConectado ? TFT_GREEN : dreamQuer ? TFT_YELLOW : COL_DIM);
+  drawBotaoAjuste(4, "Buzina ext. >", tx433Ok ? "som/vol/alarme" : "sem 433", 0x7800, tx433Ok ? COL_DIM : TFT_RED);
   char subPrint[16];
   if (!sdOk)        snprintf(subPrint, sizeof(subPrint), "sem cartao");
   else if (printEm) snprintf(subPrint, sizeof(subPrint), "em %lu s...",
                              (unsigned long)((printEm > millis() ? printEm - millis() : 0) + 999) / 1000);
   else              snprintf(subPrint, sizeof(subPrint), "em 3 s");
-  drawBotaoAjuste(4, "Print", subPrint, TFT_PURPLE, !sdOk ? TFT_RED : printEm ? TFT_YELLOW : COL_DIM);
-  drawBotaoAjuste(5, "Buzina ext. >", tx433Ok ? "som/vol/alarme" : "sem 433", 0x7800, tx433Ok ? COL_DIM : TFT_RED);
+  drawBotaoAjuste(5, "Print", subPrint, TFT_PURPLE, !sdOk ? TFT_RED : printEm ? TFT_YELLOW : COL_DIM);
+  if (dormirConfirma && millis() - dormirConfirma > 3000) dormirConfirma = 0;   // "certeza?" expira
+  drawBotaoAjuste(6, dormirConfirma ? "certeza?" : "Dormir", dormirConfirma ? "toque de novo" : "BOOT acorda",
+                  dormirConfirma ? (uint16_t)TFT_RED : (uint16_t)0x4208, dormirConfirma ? TFT_WHITE : COL_DIM);
 
   // informacoes
   char b[48];
-  int y = AJ_Y0 + 3 * AJ_DY + 8;
+  int y = AJ_Y0 + 4 * AJ_DY + 6;
   spr.setTextDatum(top_left);
   if (batPct >= 0) snprintf(b, sizeof(b), "Bateria: %.2f V  %d%%%s", batV, batPct, batCarregando ? "  carregando" : "");
   else             snprintf(b, sizeof(b), "Bateria: sem leitura (%.2f V)", batV);
   spr.setTextColor(batPct < 0 ? COL_DIM : batPct > 15 ? TFT_WHITE : TFT_RED);
   spr.drawString(b, 6, y);
   snprintf(b, sizeof(b), "Cartao SD: %s    MPU: %s", sdOk ? "ok" : "ausente", mpuOk ? "ok" : "--");
-  spr.setTextColor(COL_DIM); spr.drawString(b, 6, y + 20);
+  spr.setTextColor(COL_DIM); spr.drawString(b, 6, y + 18);
   snprintf(b, sizeof(b), "433 %s  som %s  %s", tx433Ok ? "ok" : "--", somOk ? "ok" : "--", VERSAO);
-  spr.drawString(b, 6, y + 40);
+  spr.drawString(b, 6, y + 36);
   spr.pushSprite(0, 0);
 }
 
 static void abrirAjustes() { modoTela = TELA_AJUSTES; Serial.println("Ajustes"); }
-static void fecharAjustes() { modoTela = TELA_NORMAL; mpuCfgConfirma = 0; Serial.printf("Tela %d\n", page); }
+static void fecharAjustes() { modoTela = TELA_NORMAL; mpuCfgConfirma = 0; dormirConfirma = 0; Serial.printf("Tela %d\n", page); }
 
 static void tocarAjustes(int x, int y) {
   for (int i = 0; i < AJ_N; i++) {
@@ -1976,15 +2001,19 @@ static void tocarAjustes(int x, int y) {
       case 0: modoTela = TELA_MPU; mpuCfgConfirma = 0; break;
       case 1: comandoConfig(String("TELA_AUTO ") + (TELA_AUTO ? "off" : "on")); break;
       case 2: comandoConfig(String("SOM_ON ") + (SOM_ON ? "off" : "on")); somBipe(); break;   // bipe so se ligou
-      case 3: dreamSetAuto(!dreamQuer); break;
-      case 4:
+      case 3: modoTela = TELA_DREAM; break;        // a tela da mochila tem o CONECTAR e o LIGA/DESLIGA
+      case 4: modoTela = TELA_BUZEXT; break;
+      case 5:
         // A cortina FICA aberta: em 3 s sai o print do que estiver na tela. Da tempo de
         // fechar (arrastar pra cima) e ir para outra tela, ou de deixar e "printar" a cortina.
         if (!sdOk) { Serial.println("[print] sem cartao SD"); break; }
         printEm = millis() + 3000;
         Serial.println("[print] em 3 s...");
         break;
-      case 5: modoTela = TELA_BUZEXT; break;
+      case 6:                                      // Dormir: 2 toques (o 1o pede "certeza?")
+        if (!dormirConfirma) dormirConfirma = millis();
+        else { dormirConfirma = 0; dormir("botao Dormir"); }
+        break;
     }
     return;
   }
@@ -2160,10 +2189,10 @@ static void drawPage() {
   if (modoTela == TELA_AJUSTES) { drawAjustes(); return; }
   if (modoTela == TELA_MPU)     { drawMpuCfg();  return; }
   if (modoTela == TELA_BUZEXT)  { drawBuzExt();  return; }
+  if (modoTela == TELA_DREAM)   { drawDream();   return; }
+  if (modoTela == TELA_PISCAS)  { drawPiscas();  return; }
   if (page == 0) drawBms();
   else if (page == 2) drawControls();
-  else if (page == 3) drawPiscas();
-  else if (page == 4) drawDream();
   else drawData();
 }
 
@@ -2189,7 +2218,7 @@ static void handleTouch() {
       arrastaSlider = 0; arrastaMpu = -1;
       if (!acordouComToque) {
         if (modoTela == TELA_MPU) arrastaMpu = mpuCfgHitBarra(x, y);
-        else if (modoTela == TELA_NORMAL && page == 4) arrastaSlider = dreamHitSlider(x, y);
+        else if (modoTela == TELA_DREAM) arrastaSlider = dreamHitSlider(x, y);
       }
     }
     xu = x; yu = y;
@@ -2209,22 +2238,25 @@ static void handleTouch() {
   int dx = xu - x0, dy = yu - y0;
   bool vertical = abs(dy) > 50 && abs(dy) > abs(dx);
   bool toque = abs(dx) < 15 && abs(dy) < 15 && millis() - t0 < 600;
-  // cortina: puxa de cima (comecando na barra) / empurra pra cima
+  // cortina de CIMA (Ajustes): puxa de cima (comecando na barra) / empurra pra cima
   if (modoTela == TELA_NORMAL && vertical && dy > 0 && y0 < 30) { abrirAjustes(); return; }
   if (modoTela == TELA_AJUSTES && vertical && dy < 0) { fecharAjustes(); return; }
+  // cortina de BAIXO (Piscas): puxa de baixo (comecando na borda, na "alca") / empurra pra baixo
+  if (modoTela == TELA_NORMAL && vertical && dy < 0 && y0 >= 290) { modoTela = TELA_PISCAS; Serial.println("Piscas"); return; }
+  if (modoTela == TELA_PISCAS && vertical && dy > 0) { modoTela = TELA_NORMAL; Serial.printf("Tela %d\n", page); return; }
   if (modoTela == TELA_AJUSTES) { if (toque) tocarAjustes(x0, y0); return; }
   if (modoTela == TELA_MPU)     { if (toque) tocarMpuCfg(x0, y0); return; }
   if (modoTela == TELA_BUZEXT)  { if (toque) tocarBuzExt(x0, y0); return; }
+  if (modoTela == TELA_DREAM)   { if (toque) tocarDream(x0, y0); return; }
+  if (modoTela == TELA_PISCAS)  { if (toque) tocarPiscas(x0, y0); return; }
 
-  if (!(client && client->isConnected())) return;   // sem roda: paginas paradas (so a cortina)
+  if (!(client && client->isConnected())) return;   // sem roda: paginas paradas (so as cortinas)
   if (abs(dx) > 60 && abs(dx) > abs(dy)) {        // deslizou na horizontal
     if (dx < 0 && page < NUM_PAGES - 1) page++;   // para a esquerda: tela da direita
     if (dx > 0 && page > 0) page--;
     Serial.printf("Tela %d\n", page);
   } else if (toque) {                             // foi um toque
     if (page == 2) tocarControles(x0, y0);
-    else if (page == 3) tocarPiscas(x0, y0);
-    else if (page == 4) tocarDream(x0, y0);
   }
 }
 
@@ -2557,13 +2589,18 @@ static void rx433Acao(uint32_t cod) {
 // conta depois de 300 ms sem quadros dele (soltou).
 // Acoes que usam o radio 433 ficam guardadas ate o controle PARAR de transmitir
 // (150 ms sem quadros = soltou o botao) - ver rx433UsaRadio.
-static const uint32_t RX_SOLTOU_MS = 150;
+// 80 ms: entre um quadro e outro o controle pausa so ~1,2 ms, entao 80 ms de silencio
+// (~2 quadros) ja e "soltou" com folga. (era 150: um pouco de demora a mais.)
+static const uint32_t RX_SOLTOU_MS = 80;
 static void rx433Loop() {
-  static uint32_t visto = 0, ultimo = 0, tUltimo = 0, pendente = 0;
+  static uint32_t visto = 0, ultimo = 0, tUltimo = 0, tPrimeiro = 0, pendente = 0;
   static int repet = 0;
   static bool agiu = false;
   if (pendente && millis() - tUltimo > RX_SOLTOU_MS) {   // controle calou: agora o ar esta livre
     uint32_t p = pendente; pendente = 0;
+    // quanto o controle transmitiu neste aperto (+ a espera): se for muito, a demora e dele
+    Serial.printf("[433 rx] controle transmitiu %lu ms; respondendo %lu ms apos o 1o quadro\n",
+                  (unsigned long)(tUltimo - tPrimeiro), (unsigned long)(millis() - tPrimeiro));
     rx433Acao(p);
   }
   uint32_t c = rxContador;
@@ -2572,7 +2609,7 @@ static void rx433Loop() {
   uint32_t cod = rxCodigo;
   if ((cod >> 8) != CONTROLE_ID) return;       // outro aparelho (piscas, o proprio display...)
   if (cod == ultimo && millis() - tUltimo < 300) repet++;
-  else { ultimo = cod; repet = 1; agiu = false; }
+  else { ultimo = cod; repet = 1; agiu = false; tPrimeiro = millis(); }
   tUltimo = millis();
   if (!agiu && repet >= 2) {
     agiu = true;

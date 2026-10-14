@@ -184,13 +184,17 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 ### Telas (deslizar o dedo)
 
 ```
-[ BMS ]  ←  [ PRINCIPAL ]  →  [ CONTROLES ]  →  [ PISCAS ]  →  [ MOCHILA ]
+              ↓ arrastar pra BAIXO a partir da barra de cima
+    [ AJUSTES ]  →  MPU >  /  Mochila >  /  Buzina ext. >   (cada uma com VOLTAR = principal)
 
-         ↓ arrastar pra baixo a partir da barra de cima
-    [ AJUSTES ]  →  MPU >  →  [ CONFIG DO MPU ]  (VOLTAR = principal)
+[ BMS ]  ←  [ PRINCIPAL ]  →  [ CONTROLES ]        (deslizar para os lados)
+
+              ↑ arrastar pra CIMA a partir da borda de baixo ("alça")
+    [ PISCAS ]   (arrastar pra baixo fecha)
 ```
 
-- **Ajustes (cortina):** arraste pra **baixo** começando na barra de cima; arraste pra **cima** para fechar. Funciona **até sem a roda** (bancada). Botões: **MPU >** (abre a config), **Tela auto**, **Som**, **Mochila** (conectar/desconectar), **Print** (salva a tela 3 s depois; a cortina **continua aberta** — deixa ela pra "printar" a própria cortina, ou arrasta pra cima e vai pra outra tela dentro dos 3 s), **Buzina ext. >**. Embaixo: bateria (V, % e "carregando"), cartão, sensores e a versão do firmware.
+- **Ajustes (cortina de cima):** arraste pra **baixo** começando na barra de cima; arraste pra **cima** para fechar. Funciona **até sem a roda** (bancada). Botões: **MPU >** (abre a config), **Tela auto**, **Som**, **Mochila >** (abre a tela da mochila, com CONECTAR e LIGA/DESLIGA), **Buzina ext. >**, **Print** (salva a tela 3 s depois; a cortina **continua aberta** — deixa ela pra "printar" a própria cortina, ou arrasta pra cima e vai pra outra tela dentro dos 3 s), **Dormir** (2 toques: o 1º pede "certeza?"). Embaixo: bateria (V, % e "carregando"), cartão, sensores e a versão do firmware.
+- **Piscas (cortina de baixo):** nas páginas de deslizar há uma "alça" cinza no meio da borda de baixo; arrastando pra **cima** a partir dela abre a tela dos piscas/luz; arrastando pra **baixo**, fecha. Também funciona sem a roda.
 - **Buzina externa:** as 7 funções do controle original, mandadas com a identidade do display: **BUZINA**, volume −/+, **< som / som >** (= segurar vol+/vol− no controle: troca entre os 4 sons), alarme liga/desliga. Se o rádio 433 estiver ocupado, o comando espera na fila e sai em seguida. VOLTAR = tela principal. ✅ Testado em 12/10 (v5-202610122151): troca de sons funcionando pelo display, piscas na ordem certa pelo controle.
 - **Config do MPU:** **GRAVAR** (com o braço na posição de olhar), **AUTO sim/não**, **PADRÃO** (toque 2×; volta os ângulos 30/50) e as barras *acende abaixo de* / *apaga acima de* (seta amarela = onde o braço está agora). Salva ao soltar o dedo. Com esta tela (ou os Ajustes) aberta a tela não apaga sozinha.
 
@@ -222,7 +226,7 @@ O display **dorme sozinho** (quase tudo desliga, inclusive o Bluetooth) quando:
 - fica **10 min sem roda e sem USB/carregador** (e sem toque na tela) — na mesa, parado; ou
 - a **bateria chega ao fim**: abaixo de **3,30 V** por 30 s (a placa não protege a célula sozinha).
 
-Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanternas pelo 433 (se estavam acesas) e mostra "Dormindo — aperte BOOT para ligar" por 2,5 s. **Acorda no BOOT** (é um reinício: a ponte começa do zero). Andando ele nunca dorme (roda conectada). Teste: `dormir` no Serial. Ajustes no topo do código: `DORMIR_SEM_RODA_MS`, `BAT_CORTE_V`.
+Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanternas pelo 433 (se estavam acesas) e mostra "Dormindo — aperte BOOT para ligar" por 2,5 s. **Acorda no BOOT** (é um reinício: a ponte começa do zero). Também dá pra mandar dormir pelo botão **Dormir** da cortina (2 toques). **Futuro:** acordar mexendo o braço — fio INT do MPU no IO14 + "modo vigia" do MPU antes de dormir (como no `teste_tela_mpu`); por isso o MPU fica sempre alimentado (o LED dele aceso no sono é normal: é ligado direto na alimentação da plaquinha). Andando ele nunca dorme (roda conectada). Teste: `dormir` no Serial. Ajustes no topo do código: `DORMIR_SEM_RODA_MS`, `BAT_CORTE_V`.
 
 ### Controle de mídia (v5 MIDIA)
 
@@ -436,7 +440,7 @@ Recaptura de 12/10 (2 toques + 2 segurando cada botão): buzina, alarme liga e d
 | cadeado fechado | `55` | **desliga o alarme** da buzina externa (o display manda `00 9F 1D 33`) |
 | segurar vol± | `66` / `FF` | livres (aparece `[433 rx] botao XX sem funcao` no Serial) |
 
-O display só age depois de 2 quadros iguais (contra ruído) e **uma vez por aperto**. Ele ignora tudo que não for a identidade `00 9F 1C` (piscas, o próprio display transmitindo a buzina externa...). Enquanto o display transmite no 433 (~0,5–0,8 s), o receptor fica "surdo".
+O display só age depois de 2 quadros iguais (contra ruído) e **uma vez por aperto**. Ações pelo 433 saem **80 ms depois que o controle para** de transmitir (era 150 ms); o Serial mostra `[433 rx] controle transmitiu X ms` — se X for grande num toque rápido, a demora é do próprio controle. Ele ignora tudo que não for a identidade `00 9F 1C` (piscas, o próprio display transmitindo a buzina externa...). Enquanto o display transmite no 433 (~0,5–0,8 s), o receptor fica "surdo".
 
 Obs.: a sensibilidade do alarme se ajusta nos botões de volume, logo depois do cadeado fechado (antes de ativar).
 
