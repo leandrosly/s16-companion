@@ -1,4 +1,4 @@
-// VERSAO: v5-202610142050   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v5-202610142141   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -37,6 +37,10 @@
   - Paginas de deslizar so BMS / principal / controles. PISCAS = cortina de BAIXO
     (arrastar pra cima a partir da borda, onde fica a "alca"); MOCHILA = botao da cortina.
   - Botao Dormir na cortina (2 toques). Controle -> 433 responde mais rapido (80 ms).
+  - Mochila: botao mostra CONECTANDO... / PROCURANDO... (retorno visual).
+  - "Acorda mexendo" (cortina): no sono, o INT do MPU (IO14) tambem acorda. Salvo.
+  - Dormir apaga piscas E mochila; acordar devolve os dois como estavam (estado da
+    mochila agora salvo na flash). Indicador das lanternas dos lados da velocidade.
 
   Bibliotecas: NimBLE-Arduino 2.5.1 COM O PATCH (pasta patch_nimble_2.5.1), LovyanGFX (lovyan03)
   Placa: "ESP32S3 Dev Module"
@@ -64,7 +68,7 @@
 #define USAR_SOM 1
 
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v5-202610142050";
+static const char* VERSAO = "v5-202610142141";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -95,6 +99,10 @@ static bool SOM_ON = true;
 // Mochila Dream: manter conectado automaticamente (conexao bloqueante com
 // timeout curto; a assincrona e que estourava o buffer). Salvo na config.
 static bool DREAM_AUTO = true;
+
+// Acordar do sono MEXENDO o braco (INT do MPU no IO14). Opcao porque, guardado na
+// mochila, ele acordaria a cada sacolejo. Nunca vale no sono por bateria no fim.
+static bool ACORDA_MEXENDO = false;
 
 // Mochila (Dream): estado aqui no topo porque o console usa.
 static const char* DREAM_MAC = "2b:80:04:13:0e:4d";
@@ -176,6 +184,8 @@ static const uint32_t MPU_T_LIGAR = 250;          // ms na posicao para acender
 static const uint32_t MPU_T_APAGAR = 1500;        // ms fora para apagar
 static const uint32_t MPU_T_TOQUE = 8000;         // ms acesa depois de um toque
 static const uint8_t  MPU_BRILHO = 200;           // brilho com a tela acesa
+static const int      MPU_PINO_INT = 14;          // INT do MPU (ja ligado) -> acordar mexendo
+static const uint8_t  MPU_MOT_THR = 20;           // limite do detector de movimento (~sensibilidade 5 do teste)
 static bool  mpuOk = false;
 static bool  mpuTemRef = false;
 static float mpuRx = 0, mpuRy = 0, mpuRz = 1;     // gravidade na posicao "olhando"
@@ -229,6 +239,7 @@ static OpcaoBool OPCOES_BOOL[] = {
   { "TELA_AUTO", &TELA_AUTO, false },
   { "SOM_ON", &SOM_ON, true },
   { "DREAM_AUTO", &DREAM_AUTO, true },
+  { "ACORDA_MEXENDO", &ACORDA_MEXENDO, false },
 };
 static OpcaoTexto OPCOES_TEXTO[] = {
   { "NAME_FILTER", &NAME_FILTER, "KS" },
@@ -1166,7 +1177,7 @@ static void handleSerialConsole() {
     }
     if (orig == "comandos" || orig == "ajuda" || orig == "help" || orig == "?") { mostrarComandos(); continue; }
     if (orig == "print") { printEm = millis() + 1; continue; }   // print da tela agora
-    if (orig == "dormir") { dormir("comando dormir"); continue; }  // testa o sono agora
+    if (orig == "dormir") { dormir("comando dormir", true); continue; }  // testa o sono agora
     if (orig == "bat") {
       Serial.printf("bateria: %.2f V  %d%%  %s  (IO9 cru: %lu mV = metade)  USB do PC: %s\n", batV, batPct,
                     batCarregando ? "CARREGANDO" : "na bateria",
@@ -1480,6 +1491,29 @@ static void pwmPicoAtualizar() {
   if (wd.pwm >= pwmPicoMostrar()) { pwmPicoV = wd.pwm; pwmPicoT = millis(); }
 }
 
+// Indicador das lanternas na tela principal (lado 1 = esquerda, 2 = direita), como as
+// lanternas estao AGORA:
+//   vermelho / laranja = bolinha da cor do modo base nos dois lados
+//   piscando           = bolinha laranja com um pontinho piscando no meio (discreto)
+//   pisca de curva     = SETA VERDE piscando no lado da curva, apontando pra fora (como no
+//                        painel de carro); o outro lado fica apagado, igual a lanterna
+//   apagado            = nada
+static void drawLuzLado(int cx, int lado) {
+  const int cy = 42;
+  bool fase = (millis() / 400) % 2;
+  if (piscaAtivo) {
+    if (piscaAtivo != lado || !fase) return;
+    int d = (lado == 1) ? -1 : 1;                 // -1 aponta pra esquerda, +1 pra direita
+    spr.fillTriangle(cx + d * 12, cy, cx, cy - 11, cx, cy + 11, TFT_GREEN);   // ponta
+    spr.fillRect(d < 0 ? cx : cx - 11, cy - 4, 12, 9, TFT_GREEN);              // haste
+    return;
+  }
+  if (luzBase == LUZ_OFF) return;
+  uint16_t c = (luzBase == LUZ_VERMELHO) ? (uint16_t)TFT_RED : (uint16_t)0xFD20;
+  spr.fillCircle(cx, cy, 9, c);
+  if (luzBase == LUZ_PISCANDO && fase) spr.fillCircle(cx, cy, 3, TFT_BLACK);
+}
+
 static void drawData() {
   if (millis() - wd.lastUpdate > 2000) { statusMsg("Conectado", "Sem dados..."); return; }
   char buf[24];
@@ -1502,6 +1536,10 @@ static void drawData() {
   } else {
     spr.drawString("km/h", 120, 135);
   }
+
+  // ---- lanternas: um indicador de cada lado da velocidade ----
+  drawLuzLado(24, 1);
+  drawLuzLado(216, 2);
 
   // ---- barra de PWM ----
   const int bx = 8, by = 150, bw = 224, bh = 34;
@@ -1936,10 +1974,10 @@ static void dreamArrastaSlider(int which, int x) {
 // Grade 2 x 4:   [MPU >]       [Tela auto]
 //                [Som]         [Mochila >]
 //                [Buzina ext >][Print]
-//                [Dormir]      (livre)
+//                [Dormir]      [Acorda mexendo]
 // Embaixo: bateria, cartao, sensores, versao. Fecha arrastando pra cima.
 static const int AJ_X[2] = { 6, 124 }, AJ_W = 110, AJ_H = 46, AJ_Y0 = 48, AJ_DY = 52;
-static const int AJ_N = 7;
+static const int AJ_N = 8;
 
 static void drawBotaoAjuste(int i, const char* titulo, const char* sub, uint16_t fundo, uint16_t corSub) {
   int x = AJ_X[i % 2], y = AJ_Y0 + (i / 2) * AJ_DY;
@@ -1976,6 +2014,8 @@ static void drawAjustes() {
   if (dormirConfirma && millis() - dormirConfirma > 3000) dormirConfirma = 0;   // "certeza?" expira
   drawBotaoAjuste(6, dormirConfirma ? "certeza?" : "Dormir", dormirConfirma ? "toque de novo" : "BOOT acorda",
                   dormirConfirma ? (uint16_t)TFT_RED : (uint16_t)0x4208, dormirConfirma ? TFT_WHITE : COL_DIM);
+  drawBotaoAjuste(7, "Acorda mexendo", !mpuOk ? "sem MPU" : ACORDA_MEXENDO ? "sim" : "nao",
+                  ACORDA_MEXENDO && mpuOk ? LIG : DESL, ACORDA_MEXENDO && mpuOk ? TFT_WHITE : COL_DIM);
 
   // informacoes
   char b[48];
@@ -2014,8 +2054,9 @@ static void tocarAjustes(int x, int y) {
         break;
       case 6:                                      // Dormir: 2 toques (o 1o pede "certeza?")
         if (!dormirConfirma) dormirConfirma = millis();
-        else { dormirConfirma = 0; dormir("botao Dormir"); }
+        else { dormirConfirma = 0; dormir("botao Dormir", true); }
         break;
+      case 7: comandoConfig(String("ACORDA_MEXENDO ") + (ACORDA_MEXENDO ? "off" : "on")); break;   // salvo
     }
     return;
   }
@@ -2340,7 +2381,39 @@ static void dreamReaplicar() {   // re-manda o modo atual (apos mexer brilho/cor
   if (!dreamLigado) return;
   if (dreamModo == 0) dreamEnviarCor(dreamR, dreamG, dreamB); else dreamEnviarEfeito();
 }
+// --- Estado da mochila SALVO na flash (ligada, modo, cor, brilho, efeito, velocidade) ---
+// Antes nao era salvo: ao religar, o display achava "desligada" e apagava a mochila
+// ao reconectar. Agora volta como estava. Grava so depois de 2 s sem mudar (o slider
+// nao gasta a flash a cada passo; o DEMO, que muda o efeito a cada 1,5 s, so grava ao parar).
+static void dreamEstado(uint8_t* a) {
+  a[0] = dreamLigado ? 1 : 0; a[1] = dreamModo; a[2] = dreamR; a[3] = dreamG; a[4] = dreamB;
+  a[5] = dreamBrilho; a[6] = dreamEf; a[7] = dreamVel;
+}
+static void dreamCarregar() {
+  uint8_t a[8];
+  prefs.begin("s16cfg", true);
+  size_t n = prefs.getBytes("dream", a, 8);
+  prefs.end();
+  if (n != 8) return;                            // nunca salvo: fica o padrao
+  dreamLigado = a[0] != 0; dreamModo = a[1]; dreamR = a[2]; dreamG = a[3]; dreamB = a[4];
+  dreamBrilho = a[5]; dreamEf = a[6]; dreamVel = a[7];
+  Serial.printf("[dream] estado salvo: %s, %s\n", dreamLigado ? "ligada" : "desligada", dreamModo ? "efeito" : "cor");
+}
+static void dreamSalvarSeMudou(bool agora) {     // agora = true: grava ja (antes de dormir)
+  static uint8_t salvo[8], ultimo[8];
+  static bool iniciou = false;
+  static uint32_t tMudou = 0;
+  uint8_t a[8]; dreamEstado(a);
+  if (!iniciou) { memcpy(salvo, a, 8); memcpy(ultimo, a, 8); iniciou = true; return; }
+  if (memcmp(a, ultimo, 8)) { memcpy(ultimo, a, 8); tMudou = millis(); }
+  if (memcmp(a, salvo, 8) && (agora || millis() - tMudou > 2000)) {
+    prefs.begin("s16cfg", false); prefs.putBytes("dream", a, 8); prefs.end();
+    memcpy(salvo, a, 8);
+  }
+}
+
 static void dreamLoop() {
+  dreamSalvarSeMudou(false);
   // aplica o estado desejado uma vez, ja no contexto do loop (nao no callback do NimBLE)
   if (dreamConectado && dreamAplicarPend) { dreamAplicarPend = false; dreamAplicar(); }
 
@@ -2462,6 +2535,12 @@ static void tx433Setup() {
   prefs.begin("s16cfg", true);
   luzBase = prefs.getInt("luz_base", LUZ_OFF);
   prefs.end();
+  // Ao ligar/acordar, as lanternas voltam ao modo base salvo (ao dormir elas sao apagadas).
+  // O pisca de curva nao volta: e coisa do momento.
+  if (luzBase != LUZ_OFF) {
+    tx433Enviar(LUZ_CMD[luzBase]);               // sai no loop, quando o radio estiver livre
+    Serial.printf("433: restaurando a luz base (%s)\n", LUZ_NOME[luzBase]);
+  }
 }
 
 // ---- Logica das luzes/piscas ----
@@ -2738,6 +2817,21 @@ static bool mpuLerAccel() {
   mpuFx += 0.1f * (ax - mpuFx); mpuFy += 0.1f * (ay - mpuFy); mpuFz += 0.1f * (az - mpuFz);
   return true;
 }
+// "Modo vigia" para o sono: o MPU fica sozinho medindo a 5 Hz (giroscopio parado,
+// gasta quase nada) e levanta o INT quando detecta movimento -> acorda o ESP32.
+// (mesma sequencia do teste_tela_mpu; o proximo boot reseta o MPU no mpuSetup)
+static void mpuModoVigia() {
+  mpuEscrever(0x1C, 0x09);          // +-4 g + filtro passa-alta 5 Hz (so ve MUDANCA)
+  mpuEscrever(0x1F, MPU_MOT_THR);   // MOT_THR
+  mpuEscrever(0x20, 1);             // MOT_DUR
+  mpuEscrever(0x37, 0x20);          // INT ativo em 1, travado ate ler
+  mpuEscrever(0x38, 0x40);          // so a interrupcao de movimento
+  delay(50);
+  uint8_t st; lgfx::i2c::readRegister(0, MPU_END, 0x3A, &st, 1, 400000);   // limpa INT pendente
+  mpuEscrever(0x6C, 0x47);          // acorda a 5 Hz, giroscopio em espera
+  mpuEscrever(0x6B, 0x28);          // modo ciclo
+}
+
 static void mpuSalvarRef() {
   float m = sqrtf(mpuFx * mpuFx + mpuFy * mpuFy + mpuFz * mpuFz);
   if (m < 0.5f) { Serial.println("mpu: leitura ruim, tente de novo parado"); return; }
@@ -2889,11 +2983,17 @@ static void batLoop() {
 // Fecha a gravacao, grava os eventos, apaga as lanternas (433), mostra o aviso e dorme.
 // Pinos que precisam ficar FIXOS durante o sono: luz de fundo (IO45) em 0 e o
 // amplificador (IO1) desligado (1) - solto, ele poderia ligar e gastar bateria.
-static void dormir(const char* motivo) {
-  Serial.printf("[sono] dormindo: %s (acorda no BOOT)\n", motivo);
+// podeMexer: se ACORDA_MEXENDO estiver ligado, o movimento (INT do MPU) tambem acorda.
+// Na bateria no fim e false: acordar mexendo ali so gastaria o resto da celula.
+static void dormir(const char* motivo, bool podeMexer) {
+  bool mexer = podeMexer && ACORDA_MEXENDO && mpuOk;
+  Serial.printf("[sono] dormindo: %s (acorda no BOOT%s)\n", motivo, mexer ? " ou mexendo" : "");
   logEvent("dormindo: %s", motivo);
   stopRideLog();
   writeEvents();                                    // grava os eventos pendentes no cartao
+  // Dormir apaga tudo; acordar devolve tudo como estava (piscas no tx433Setup, mochila ao reconectar)
+  dreamSalvarSeMudou(true);                         // guarda o estado da mochila antes
+  if (dreamConectado && dreamLigado) dreamEnviarLiga(false);   // apaga a mochila (sem mexer no estado salvo)
   if (tx433Ok && (piscaAtivo || luzBase != LUZ_OFF)) {   // apaga as lanternas (as outras pilhas agradecem)
     while (millis() < tx433LivreEm) delay(10);
     tx433Enviar(CMD_LUZ_OFF); tx433Loop();
@@ -2907,12 +3007,13 @@ static void dormir(const char* motivo) {
   spr.setFont(&fonts::Font2); spr.setTextColor(COL_DIM);
   spr.drawString(motivo, 120, 165);
   spr.setTextColor(TFT_YELLOW);
-  spr.drawString("aperte BOOT para ligar", 120, 195);
+  spr.drawString(mexer ? "aperte BOOT ou mexa o braco" : "aperte BOOT para ligar", 120, 195);
   spr.pushSprite(0, 0);
   delay(2500);
 
   lgfx::i2c::writeRegister8(0, 0x38, 0xA5, 0x03, 0, 400000);   // touch em hibernacao
-  if (mpuOk) mpuEscrever(0x6B, 0x40);                          // MPU dorme
+  if (mexer) mpuModoVigia();                                   // MPU vigiando movimento
+  else if (mpuOk) mpuEscrever(0x6B, 0x40);                     // MPU dorme de vez
   tft.sleep();
   digitalWrite(SOM_AMP_EN, HIGH);                              // amplificador desligado...
   gpio_hold_en((gpio_num_t)SOM_AMP_EN);                        // ...e preso assim
@@ -2923,6 +3024,11 @@ static void dormir(const char* motivo) {
   gpio_deep_sleep_hold_en();
   rtc_gpio_pullup_en(GPIO_NUM_0);                              // BOOT acorda
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
+  if (mexer) {                                                 // INT do MPU (sobe ao mexer) acorda
+    rtc_gpio_pulldown_en((gpio_num_t)MPU_PINO_INT);
+    rtc_gpio_pullup_dis((gpio_num_t)MPU_PINO_INT);
+    esp_sleep_enable_ext1_wakeup(1ULL << MPU_PINO_INT, ESP_EXT1_WAKEUP_ANY_HIGH);
+  }
   Serial.flush();
   esp_deep_sleep_start();
 }
@@ -2936,10 +3042,10 @@ static void sonoLoop() {
   bool tomada = usbPC || batCarregando || batPct < 0;
   if (roda || tomada || ativoEm == 0) ativoEm = agora;
   if (mpuUltimoToque > ativoEm) ativoEm = mpuUltimoToque;     // tocou na tela
-  if (agora - ativoEm >= DORMIR_SEM_RODA_MS) dormir("10 min sem roda e sem USB");
+  if (agora - ativoEm >= DORMIR_SEM_RODA_MS) dormir("10 min sem roda e sem USB", true);
   if (batPct >= 0 && !batCarregando && !usbPC && batV < BAT_CORTE_V) { if (!baixaDesde) baixaDesde = agora; }
   else baixaDesde = 0;
-  if (baixaDesde && agora - baixaDesde > 30000) dormir("bateria no fim");
+  if (baixaDesde && agora - baixaDesde > 30000) dormir("bateria no fim", false);
 }
 
 // ================= PRINT da tela -> BMP no cartao (/prints/print_NNN.bmp) =================
@@ -3003,8 +3109,14 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.printf("\n=== S16 Companion ponte %s ===\n", VERSAO);
-  Serial.printf("ligou por: %s\n", esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0 ? "botao BOOT (acordou do sono)" : "energia/reset");
+  {
+    esp_sleep_wakeup_cause_t c = esp_sleep_get_wakeup_cause();
+    Serial.printf("ligou por: %s\n", c == ESP_SLEEP_WAKEUP_EXT0 ? "botao BOOT (acordou do sono)"
+                                   : c == ESP_SLEEP_WAKEUP_EXT1 ? "movimento (INT do MPU, acordou do sono)"
+                                   : "energia/reset");
+  }
   carregarConfig();
+  dreamCarregar();             // estado das luzes da mochila (volta como estava ao reconectar)
   tft.init();
   tft.setRotation(0);          // retrato, 240x320 (USB-C embaixo; mude para 2 para inverter)
   tft.setBrightness(200);

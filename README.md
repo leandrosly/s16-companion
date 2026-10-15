@@ -200,6 +200,7 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 - **Config do MPU:** **GRAVAR** (com o braço na posição de olhar), **AUTO sim/não**, **PADRÃO** (toque 2×; volta os ângulos 30/50) e as barras *acende abaixo de* / *apaga acima de* (seta amarela = onde o braço está agora). Salva ao soltar o dedo. Com esta tela (ou os Ajustes) aberta a tela não apaga sozinha.
 
 - **Principal:** velocidade (cor pelo PWM: verde < 70% < amarelo < 85% < vermelho), barra de PWM, tensão, corrente, temperaturas, trip, máxima e limite.
+- **Lanternas na principal:** um indicador de cada lado da velocidade, logo abaixo da barra: bolinha **vermelha** ou **laranja** (modo base), laranja com um **pontinho piscando** no meio (modo piscando), **seta verde piscando** apontando pra fora no lado da curva (pisca ativo — o outro lado fica apagado, igual à lanterna); nada = apagadas.
 - **Pico do PWM** (como o pontinho de um VU): um risco na barra marca o maior PWM recente e "pico NN%" aparece à direita, acima da barra. Fica **parado 5 s** e depois **desce 4 pontos/s** (`PWM_PICO_SEGURA`, `PWM_PICO_CAI`). Conta mesmo com a tela apagada ou em outra página — dá pra ver depois o pico daquela lomba em que não estava olhando.
 - **BMS:** os 2 packs com tensão, SoC, temperatura, célula mínima e máxima, diferença em mV e gráfico das 20 células (escala ampliada).
 - **Controles (v5 MIDIA):**
@@ -227,7 +228,9 @@ O display **dorme sozinho** (quase tudo desliga, inclusive o Bluetooth) quando:
 - fica **10 min sem roda e sem USB/carregador** (e sem toque na tela) — na mesa, parado; ou
 - a **bateria chega ao fim**: abaixo de **3,30 V** por 30 s (a placa não protege a célula sozinha).
 
-Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanternas pelo 433 (se estavam acesas) e mostra "Dormindo — aperte BOOT para ligar" por 2,5 s. **Acorda no BOOT** (é um reinício: a ponte começa do zero). Também dá pra mandar dormir pelo botão **Dormir** da cortina (2 toques). **Futuro:** acordar mexendo o braço — o fio INT do MPU **já está ligado no IO14**; falta só o firmware pôr o MPU em "modo vigia" antes de dormir (como no `teste_tela_mpu`) e acordar pelo IO14. Cuidado a decidir: guardado na mochila, ele acordaria o tempo todo (por isso a ideia é uma opção liga/desliga). Por isso o MPU fica sempre alimentado (o LED dele aceso no sono é normal: é ligado direto na alimentação da plaquinha). Andando ele nunca dorme (roda conectada). Teste: `dormir` no Serial. Ajustes no topo do código: `DORMIR_SEM_RODA_MS`, `BAT_CORTE_V`.
+**Dormir apaga tudo, acordar devolve tudo** (14/10): ao dormir apaga as lanternas (433) e a mochila (se conectada); ao ligar/acordar, as lanternas voltam ao **modo base salvo** (o pisca de curva não volta) e a mochila, ao reconectar, volta **como estava** — o estado dela (ligada, cor/efeito, brilho, velocidade) agora é salvo na flash (2 s depois da última mudança, para não gastar a flash com o slider). Antes ela apagava ao reconectar porque o display religava achando que estava "desligada".
+
+Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanternas pelo 433 (se estavam acesas) e mostra "Dormindo — aperte BOOT para ligar" por 2,5 s. **Acorda no BOOT** (é um reinício: a ponte começa do zero). Também dá pra mandar dormir pelo botão **Dormir** da cortina (2 toques). **Acorda mexendo** (botão na cortina, salvo em `ACORDA_MEXENDO`, começa **desligado**): antes de dormir o MPU entra em "modo vigia" (mede a 5 Hz sozinho, gasta quase nada) e o INT dele (IO14, já ligado) acorda o ESP32 ao detectar movimento. Desligado por padrão porque, guardado na mochila, ele acordaria a cada sacolejo (e ficaria 10 min acordado). **Nunca** vale no sono por bateria no fim. Sensibilidade: `MPU_MOT_THR` (20). Por isso o MPU fica sempre alimentado (o LED dele aceso no sono é normal: é ligado direto na alimentação da plaquinha). Andando ele nunca dorme (roda conectada). Teste: `dormir` no Serial. Ajustes no topo do código: `DORMIR_SEM_RODA_MS`, `BAT_CORTE_V`.
 
 ### Controle de mídia (v5 MIDIA)
 
@@ -300,8 +303,8 @@ A roda: `KS-S16P-0254`, série `KSSE61O231020J158`, anuncia como `KSN-S16P--4C4B
 |---|---|
 | `A9` | 2–3 tensão (/100 V) · 4–5 velocidade (/100 km/h) · 10–11 corrente (signed, /100 A; **negativa = regeneração/freio**) · 12–13 temperatura da **placa-mãe** (/100 °C) |
 | `B9` | 2–5 trip (u32 "invertido", /1000 km) · 6–7 tempo (s) · 8–9 máxima (/100 km/h) · 12 ventoinha ("Cooling") · 14–15 temperatura do **motor** (confirmado com o app) |
-| `F5` | 14 carga de CPU? · **15 PWM (%)** |
-| `F6` | 2–3 limite de velocidade (/100; começa 20, vira 32) · 14 flags de alarme? (`DA` com PWM alto). **Pista (14/10):** fica **20 até a roda "armar"** (motor ligado mas desativado → ativa ao pôr o mono em pé, quando os giros entram) e **vira 32 ao armar**; ao desarmar e deitar, **continua 32**. Hipótese: 20 = limite "de partida/segurança" antes do 1º armar. Para investigar: `DUMP_HEX = true`, ligar a roda, armar, desarmar, deitar — e procurar nos frames (F6 e outros) um byte que acompanhe armado/desarmado **nos dois sentidos** (isso daria um ícone "armado" no display). |
+| `F5` | 14 carga de CPU (%) · **15 PWM (%)**. **Captura de 14/10 (liga → em pé → deita):** a carga de CPU fica **~36%** com a roda desarmada e pula para **~56%** enquanto ela está **armada** (o controle do motor rodando), voltando a ~36% ao deitar — é o melhor indicador de "armado" que apareceu (não há um byte-flag limpo). No mesmo período a corrente do `A9` fica **exatamente 0,00 A** (desarmada mostra −0,04…−0,10 A, ruído do sensor). |
+| `F6` | 2–3 limite de velocidade (/100; começa 20, vira 32) · 14 flags de alarme? (`DA` com PWM alto). **Pista (14/10):** fica **20 até a roda "armar"** (motor ligado mas desativado → ativa ao pôr o mono em pé, quando os giros entram) e **vira 32 ao armar**; ao desarmar e deitar, **continua 32**. Hipótese: 20 = limite "de partida/segurança" antes do 1º armar. Captura de 14/10: o F6 mudou de `D0 07` (20) para `80 0C` (32) **~2 s depois de armar** e não voltou. Nenhum outro byte do F6/A9/B9/C9 marcou armado/desarmado nos dois sentidos; o indicador que serve é a **carga de CPU do F5** (ver acima). Também confirmado: `B9` 6–7 conta segundos desde que a roda ligou. |
 | `F1`/`F2` subtipo `D0` | BMS pack 1/2 (frame longo): [21] nº células, depois tensões (mV), nº de sensores, temperaturas (0,1 K), corrente, tensão, SoC (/10 %) |
 | `C9` | tudo zero |
 
@@ -483,7 +486,7 @@ Curiosidade: cada cmd é um nibble repetido (A·A, C·C, 9·9, 5·5, 3·3). Obs.
 - O nRF Connect em segundo plano segura conexões.
 
 **Qual versão está no display?**
-- O Arduino IDE pode **não recarregar** um `.ino` alterado por fora enquanto está aberto — compila a versão velha sem avisar. Antes de compilar, fechar e reabrir o sketch, e depois de gravar conferir a versão no rodapé da cortina (12/10: "o vol+ continua invertido" era o display rodando a versão anterior).
+- O Arduino IDE pode **não recarregar** um `.ino` alterado por fora enquanto está aberto — compila a versão velha sem avisar. Antes de compilar, fechar e reabrir o sketch, e depois de gravar conferir a versão no rodapé da cortina (12/10: "o vol+ continua invertido" era o display rodando a versão anterior). 14/10: depois de um Salvar no IDE, o arquivo ficou com o código novo mas o **rótulo** da versão antigo (o editor desfez só aquelas linhas). Quando o IDE avisar que o arquivo mudou no disco, escolher **recarregar**, e evitar Ctrl+Z / Salvar logo depois.
 
 **Rádio 433: um de cada vez no ar**
 - Se o display transmitir enquanto o controle ainda está transmitindo (dedo no botão), os sinais se embaralham. Resposta via 433 só depois que o controle cala.
