@@ -35,7 +35,7 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 |---|---|---|
 | 1 | **Bateria do display** | 18650 de teste no lugar do powerbank. Conferir a leitura (`bat` no Serial / Ajustes) com o multímetro, com e sem USB. Depois: célula fina `404070` (~1300 mAh) e decidir o corte por bateria baixa (a placa não protege a célula). |
 | 2 | **Controle da buzina como botões do polegar** | ✅ Buzina pareada com o display (12/10). Agora: ligar o receptor SRX882S no IO3 e testar o mapa dos botões (ver seção 9). Depois: funções para o cadeado fechado e os toques longos. |
-| 3 | **Luz de freio** | Nos **piscas** (prioridade; a mochila é pouco usada): mandar **vermelho** quando a corrente fica negativa na frenagem (limite ~−2 A, com histerese) e **voltar ao que estava** depois, igual ao pisca. **Só quando nenhum pisca estiver ativo**: com o pisca ligado, o lado que avisa pisca vermelho+laranja e o outro fica apagado — o freio estragaria o aviso de curva. Atenção: hoje cada comando 433 é uma rajada de 12 repetições (~0,8 s) — para freio precisa de menos repetições (resposta mais rápida). |
+| 3 | **Luz de freio** | ✅ Feita (14/10) — **testar andando**: ver se os limites (−2 A acende, −0,8 A apaga) ficam bons na prática (descida longa também regenera e acende). Ver [Luz de freio](#luz-de-freio). |
 
 **Concluídos** (já na ponte v5 MIDIA): ✅ MPU, ✅ piezo/som, ✅ piscas 433 MHz (tela + botões), ✅ mochila Dream (tela + conectar), ✅ cortina de Ajustes + tela de config do MPU, ✅ print da tela, ✅ barra de ícones com bateria.
 
@@ -221,6 +221,16 @@ roda (verde conectada / vermelha) · celular (ciano com app conectado) · ♪ (m
 **Como o display sabe que está carregando** (a placa não tem um pino pra isso — o `CHRG` do TP4054 não vai pro ESP32): (1) USB ligado num **computador** → o USB nativo do ESP32 percebe o PC (carregador de parede/powerbank não é percebido assim); (2) **degrau de tensão**: ao ligar o carregador a placa passa a rodar pelo USB e a bateria só recebe carga, então a tensão **sobe de repente**; ao tirar, **cai de repente**. Limite em `BAT_DEGRAU` (0,06 V) — se o raio errar, é ele que se ajusta. Cada mudança vira evento no log (`bateria: carregando`).
 
 **Raio preso (13/10, corrigido):** bipe/alarme e transmissão 433 puxam corrente e a tensão **afunda**; quando acabam, ela **volta de repente** — parecia o degrau do carregador, e o raio ficava aceso (3,95 V, "carregando" na cortina, sem carregador). Agora: degraus durante som/433 e até 4 s depois são ignorados, e com o raio aceso (sem PC) a tensão filtrada não pode cair mais que `BAT_CAIU` (0,04 V) abaixo do máximo — carregando ela não cai; se cair, o raio apaga.
+
+### Luz de freio
+
+Automática (salva em `FREIO_AUTO`, começa **ligada**; botão "Luz de freio: sim/não" na cortina dos piscas):
+- **Acende** com a corrente da roda **abaixo de −2 A** (regeneração = freando) andando a mais de 3 km/h. **Apaga** quando a corrente volta acima de −0,8 A por 2 leituras seguidas (ou parou), e fica no mínimo 1 s acesa (histerese: não fica piscando).
+- **Piscas:** vermelho; depois volta ao modo base. **Com pisca de curva ativo não mexe** (o aviso de curva tem prioridade); se o pisca terminar durante a frenagem, volta pro vermelho. Prioridade das lanternas: pisca de curva > freio > modo base.
+- **Mochila** (se conectada): vermelho puro no brilho máximo, **sem mexer no estado salvo**; depois volta exatamente como estava. O DEMO pausa enquanto freia.
+- **Tela:** as bolinhas dos lados da velocidade ficam vermelhas com contorno branco; na cortina dos piscas o botão vira "FREANDO".
+- **Limitação:** a roda manda a corrente ~2 vezes por segundo (frame `A9`) → até ~0,5 s de atraso. Descida longa também regenera, então também acende.
+- Teste parado: `freio` no Serial (2,5 s). Limites no topo do código: `FREIO_LIGA_A`, `FREIO_DESLIGA_A`, `FREIO_VEL_MIN`, `FREIO_MIN_MS`.
 
 ### Dormir (deep sleep)
 

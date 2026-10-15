@@ -1,4 +1,4 @@
-// VERSAO: v5-202610142141   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v5-202610142150   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -41,6 +41,8 @@
   - "Acorda mexendo" (cortina): no sono, o INT do MPU (IO14) tambem acorda. Salvo.
   - Dormir apaga piscas E mochila; acordar devolve os dois como estavam (estado da
     mochila agora salvo na flash). Indicador das lanternas dos lados da velocidade.
+  - LUZ DE FREIO: corrente < -2 A andando -> piscas vermelhos (sem pisca de curva) e
+    mochila vermelha no maximo; depois volta como estava. Botao na cortina dos piscas.
 
   Bibliotecas: NimBLE-Arduino 2.5.1 COM O PATCH (pasta patch_nimble_2.5.1), LovyanGFX (lovyan03)
   Placa: "ESP32S3 Dev Module"
@@ -68,7 +70,7 @@
 #define USAR_SOM 1
 
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v5-202610142141";
+static const char* VERSAO = "v5-202610142150";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -103,6 +105,16 @@ static bool DREAM_AUTO = true;
 // Acordar do sono MEXENDO o braco (INT do MPU no IO14). Opcao porque, guardado na
 // mochila, ele acordaria a cada sacolejo. Nunca vale no sono por bateria no fim.
 static bool ACORDA_MEXENDO = false;
+
+// LUZ DE FREIO automatica: corrente negativa (regeneracao) = freando -> piscas em vermelho
+// (so sem pisca de curva) e mochila vermelha no brilho maximo; depois volta como estava.
+static bool FREIO_AUTO = true;
+static const float    FREIO_LIGA_A = 2.0f;      // acende com corrente abaixo de -2 A...
+static const float    FREIO_DESLIGA_A = 0.8f;   // ...apaga quando volta acima de -0,8 A (2 leituras)
+static const float    FREIO_VEL_MIN = 3.0f;     // so andando (parado a corrente oscila)
+static const uint32_t FREIO_MIN_MS = 1000;      // fica no minimo 1 s aceso (nao pisca)
+static bool     freioAtivo = false;
+static uint32_t freioTesteAte = 0;              // comando 'freio': simula por 2,5 s
 
 // Mochila (Dream): estado aqui no topo porque o console usa.
 static const char* DREAM_MAC = "2b:80:04:13:0e:4d";
@@ -240,6 +252,7 @@ static OpcaoBool OPCOES_BOOL[] = {
   { "SOM_ON", &SOM_ON, true },
   { "DREAM_AUTO", &DREAM_AUTO, true },
   { "ACORDA_MEXENDO", &ACORDA_MEXENDO, false },
+  { "FREIO_AUTO", &FREIO_AUTO, true },
 };
 static OpcaoTexto OPCOES_TEXTO[] = {
   { "NAME_FILTER", &NAME_FILTER, "KS" },
@@ -1126,6 +1139,7 @@ static void mostrarComandos() {
     "bat                           bateria do display: tensao, %, carregando",
     "print                         salva a tela agora em /prints/print_NNN.bmp",
     "dormir                        dorme agora (deep sleep); o BOOT acorda",
+    "freio                         simula a luz de freio por 2,5 s (FREIO_AUTO = on/off liga a automatica)",
     "mpu | mpu on | mpu off        status / tela automatica pelo pulso",
     "mpu gravar                    grava a posicao de olhar (braco na posicao)",
     "som bipe | som alarme         testa o som",
@@ -1178,6 +1192,7 @@ static void handleSerialConsole() {
     if (orig == "comandos" || orig == "ajuda" || orig == "help" || orig == "?") { mostrarComandos(); continue; }
     if (orig == "print") { printEm = millis() + 1; continue; }   // print da tela agora
     if (orig == "dormir") { dormir("comando dormir", true); continue; }  // testa o sono agora
+    if (orig == "freio") { freioTesteAte = millis() + 2500; Serial.println("[freio] teste: 2,5 s"); continue; }
     if (orig == "bat") {
       Serial.printf("bateria: %.2f V  %d%%  %s  (IO9 cru: %lu mV = metade)  USB do PC: %s\n", batV, batPct,
                     batCarregando ? "CARREGANDO" : "na bateria",
@@ -1508,6 +1523,11 @@ static void drawLuzLado(int cx, int lado) {
     spr.fillRect(d < 0 ? cx : cx - 11, cy - 4, 12, 9, TFT_GREEN);              // haste
     return;
   }
+  if (freioAtivo) {                               // freando: vermelho com contorno branco
+    spr.fillCircle(cx, cy, 10, TFT_RED);
+    spr.drawCircle(cx, cy, 11, TFT_WHITE);
+    return;
+  }
   if (luzBase == LUZ_OFF) return;
   uint16_t c = (luzBase == LUZ_VERMELHO) ? (uint16_t)TFT_RED : (uint16_t)0xFD20;
   spr.fillCircle(cx, cy, 9, c);
@@ -1814,6 +1834,7 @@ static const uint16_t LUZ_COR[4] = { 0x3186 /*cinza*/, 0xFD20 /*laranja*/, TFT_R
 // 4 botoes de modo (2x2) e 2 botoes de pisca grandes
 static const int PM_X[2] = { 6, 124 }, PM_W = 110, PM_H = 46, PM_Y0 = 40, PM_DY = 52;
 static const int PB_Y = 176, PB_H = 92;
+static const int PF_Y = 144, PF_H = 26;            // botao "Luz de freio: sim/nao" (entre os modos e os piscas)
 
 static void drawPiscas() {
   spr.fillScreen(TFT_BLACK);
@@ -1831,6 +1852,12 @@ static void drawPiscas() {
     spr.setTextColor(sel && m == 0 ? TFT_WHITE : sel ? TFT_BLACK : TFT_WHITE);
     spr.drawString(LUZ_NOME[m], x + PM_W / 2, y + PM_H / 2);
   }
+
+  // luz de freio automatica (salvo). Freando agora: o botao fica vermelho vivo
+  spr.fillRoundRect(6, PF_Y, 228, PF_H, 6, freioAtivo ? (uint16_t)TFT_RED : FREIO_AUTO ? (uint16_t)0x6000 : (uint16_t)0x2124);
+  spr.drawRoundRect(6, PF_Y, 228, PF_H, 6, TFT_RED);
+  spr.setTextColor(TFT_WHITE);
+  spr.drawString(freioAtivo ? "FREANDO" : FREIO_AUTO ? "Luz de freio: sim" : "Luz de freio: nao", 120, PF_Y + PF_H / 2);
 
   const char* lbl[2] = { "< ESQ", "DIR >" };
   for (int k = 0; k < 2; k++) {
@@ -1855,6 +1882,10 @@ static void tocarPiscas(int x, int y) {
   }
   for (int k = 0; k < 2; k++)
     if (x >= PM_X[k] && x < PM_X[k] + PM_W && y >= PB_Y && y < PB_Y + PB_H) { piscaToggle(k + 1); return; }
+  if (y >= PF_Y && y < PF_Y + PF_H) {             // liga/desliga a luz de freio automatica (salvo)
+    comandoConfig(String("FREIO_AUTO ") + (FREIO_AUTO ? "off" : "on"));
+    if (!FREIO_AUTO && freioAtivo) { freioAtivo = false; freioTesteAte = 0; freioAplicar(false); }
+  }
 }
 
 // ---------- Tela 4: Mochila (Dream) ----------
@@ -2419,7 +2450,7 @@ static void dreamLoop() {
 
   // DEMO: percorre os efeitos sozinho
   static uint32_t tDemo = 0;
-  if (dreamDemo && dreamConectado && dreamLigado && millis() - tDemo > 1500) { tDemo = millis(); dreamSetEfeito(dreamEf + 1); }
+  if (dreamDemo && dreamConectado && dreamLigado && !freioAtivo && millis() - tDemo > 1500) { tDemo = millis(); dreamSetEfeito(dreamEf + 1); }
 
   // A RODA VEM SEMPRE PRIMEIRO: so tenta a mochila com a roda ja conectada,
   // para o scan/conexao da roda nunca disputar o radio com a mochila no boot.
@@ -2544,24 +2575,71 @@ static void tx433Setup() {
 }
 
 // ---- Logica das luzes/piscas ----
+// O que as lanternas devem mostrar AGORA, por prioridade: pisca de curva > freio > modo base.
+static void luzAplicarAtual() {
+  if (piscaAtivo) return;                   // o pisca de curva manda (o freio nao interfere)
+  tx433Enviar(freioAtivo ? CMD_LUZ_VERMELHO : LUZ_CMD[luzBase]);
+}
 static void luzSetBase(int modo) {         // escolhe o modo "parado" e ja aplica
   luzBase = modo;
   prefs.begin("s16cfg", false); prefs.putInt("luz_base", luzBase); prefs.end();
-  if (!piscaAtivo) tx433Enviar(LUZ_CMD[modo]);   // se um pisca estiver ligado, aplica ao desligar
+  luzAplicarAtual();                        // (com pisca ligado, aplica ao desligar; freando, segue vermelho)
   logEvent("luz base: %s", LUZ_NOME[modo]);
 }
 // Aperta o pisca: liga; apertando de novo, VOLTA ao modo base (nao manda "desligar").
 static void piscaToggle(int lado) {         // 1 esquerda, 2 direita
-  if (piscaAtivo == lado) {                 // desliga -> volta ao que estava
+  if (piscaAtivo == lado) {                 // desliga -> volta ao que estava (ou vermelho, se freando)
     piscaAtivo = 0;
-    tx433Enviar(LUZ_CMD[luzBase]);
-    logEvent("pisca off -> %s", LUZ_NOME[luzBase]);
+    luzAplicarAtual();
+    logEvent("pisca off -> %s", freioAtivo ? "freio" : LUZ_NOME[luzBase]);
   } else {
     piscaAtivo = lado;
     tx433Enviar(lado == 1 ? CMD_PISCA_ESQ : CMD_PISCA_DIR);
     logEvent("pisca %s", lado == 1 ? "esquerda" : "direita");
   }
 }
+// ---- LUZ DE FREIO ----
+// Liga/desliga o "modo freio": piscas (via luzAplicarAtual, respeitando o pisca de curva)
+// e mochila (vermelho sólido no brilho maximo, SEM mexer no estado salvo; ao soltar,
+// dreamAplicar devolve exatamente o que estava).
+static void freioAplicar(bool on) {
+  luzAplicarAtual();
+  if (!dreamConectado) return;
+  if (on) {
+    dreamEnviarLiga(true);
+    uint8_t c[7] = { 0x56, 0xFF, 0x00, 0x00, 0x00, 0xF0, 0xAA };   // vermelho puro, brilho maximo
+    dreamEnviar(c, 7);
+  } else {
+    dreamAplicar();
+  }
+}
+
+// A roda manda a corrente ~2x por segundo (frame A9). Uma leitura abaixo de -2 A andando
+// ja acende; para apagar, 2 leituras seguidas acima de -0,8 A (ou parado) e no minimo
+// 1 s aceso. Entre os dois limites, mantem como esta (histerese: nao fica piscando).
+static void freioLoop() {
+  static uint32_t ultAmostra = 0, ligouEm = 0;
+  static int calmas = 0;
+  bool novo = freioAtivo;
+  if (millis() < freioTesteAte) novo = true;                       // comando 'freio' (teste)
+  else if (!FREIO_AUTO || millis() - wd.lastUpdate > 2000) novo = false;   // desligado / sem dados
+  else if (wd.lastUpdate != ultAmostra) {                          // leitura nova da roda
+    ultAmostra = wd.lastUpdate;
+    bool freando = wd.current < -FREIO_LIGA_A && wd.speed > FREIO_VEL_MIN;
+    bool solto = wd.current > -FREIO_DESLIGA_A || wd.speed < FREIO_VEL_MIN;
+    if (freando) { novo = true; calmas = 0; }
+    else if (solto) calmas++;
+    else calmas = 0;
+    if (freioAtivo && !freando && calmas >= 2 && millis() - ligouEm > FREIO_MIN_MS) novo = false;
+  }
+  // (fim do teste: sem roda apaga na hora pelo 2o ramo; com a roda parada, em ~1 s pelo 3o)
+  if (novo == freioAtivo) return;
+  freioAtivo = novo;
+  if (novo) ligouEm = millis(); else freioTesteAte = 0;
+  Serial.printf("[freio] %s (%.1f A, %.0f km/h)\n", novo ? "ACENDE" : "apaga", wd.current, wd.speed);
+  freioAplicar(novo);
+}
+
 // Botoes fisicos IO2/IO3 (independem da roda; funcionam sempre)
 // Antirrepique "reage na hora, rearma so depois de solto de verdade": o 1o contato
 // ja liga o pisca; outro aperto so vale depois de 50 ms SEGUIDOS sem contato.
@@ -3232,6 +3310,7 @@ void loop() {
   batLoop();                   // tensao da bateria do display (IO9)
   pwmPicoAtualizar();          // pico do PWM (conta mesmo com a tela apagada)
   sonoLoop();                  // 10 min sem roda e sem USB, ou bateria no fim -> dorme (BOOT acorda)
+  freioLoop();                 // luz de freio: corrente negativa -> piscas e mochila em vermelho
   printLoop();                 // print da tela agendado (botao Print / comando 'print')
 
   bool wheelOk = client && client->isConnected();
