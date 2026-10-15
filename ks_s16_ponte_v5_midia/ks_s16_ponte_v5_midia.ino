@@ -1,4 +1,4 @@
-// VERSAO: v5-202610142150   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v5-202610150002   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -69,8 +69,28 @@
 // isolar se um problema vem do piezo ou de outra mudanca. 1 = som normal.
 #define USAR_SOM 1
 
+// Chave do PAREAMENTO do "S16 Controle" (ver README, secao "Pareamento V2"):
+//   0 = jeito antigo (testado): apps OK, mas o controle de midia repareia
+//       sempre que o display reinicia.
+//   1 = V2: pede a identidade (IRK) do celular e RESOLVE o endereco dele no
+//       HOST (software da NimBLE), sem ligar a resolucao no controlador
+//       (que era o que quebrava os apps). Tambem para de mandar a NOSSA
+//       identidade (ela e o endereco da roda e confundia o celular).
+//       EXIGE o nimconfig.h do patch com CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY 1.
+// Para voltar atras: ponha 0 aqui (o nimconfig.h novo pode ficar).
+#define PAREAMENTO_V2 1
+
+#if PAREAMENTO_V2 && (!defined(CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY) || !CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY)
+#error "PAREAMENTO_V2 precisa do nimconfig.h do patch (CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY 1) copiado para a biblioteca NimBLE-Arduino/src. Ou ponha PAREAMENTO_V2 0."
+#endif
+#if PAREAMENTO_V2
+// Da NimBLE (C): quantos celulares tem "registro de identidade" para a
+// resolucao no host. So existe com a privacidade no host ligada.
+extern "C" int ble_rpa_get_num_peer_dev_records(void);
+#endif
+
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v5-202610142150";
+static const char* VERSAO = "v5-202610150002";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -738,6 +758,16 @@ class ServerCB : public NimBLEServerCallbacks {
   }
   void onAuthenticationComplete(NimBLEConnInfo& info) override {
     Serial.printf("Celular pediu seguranca: cifrado=%d pareado=%d\n", info.isEncrypted(), info.isBonded());
+    // DIAGNOSTICO do pareamento: "no ar" = endereco que o celular usou agora
+    // (muda a cada ~15 min); "identidade" = endereco fixo dele, se ja sabemos.
+    // Com o PAREAMENTO_V2 funcionando, depois de religar o display a identidade
+    // deve vir IGUAL a de antes e "pareado=1" sem o celular pedir nada.
+    struct ble_gap_conn_desc d;
+    if (ble_gap_conn_find(info.getConnHandle(), &d) == 0) {
+      Serial.printf("[bond] no ar %s | identidade %s\n",
+                    NimBLEAddress(d.peer_ota_addr).toString().c_str(),
+                    NimBLEAddress(d.peer_id_addr).toString().c_str());
+    }
   }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo& info) override {
     // o MTU da conexao do controle de midia nao importa: ela nao recebe os dados da roda
@@ -1217,6 +1247,9 @@ static void handleSerialConsole() {
       Serial.printf("[bond] guardados agora: %d\n", nb);
       for (int i = 0; i < nb; i++)
         Serial.printf("[bond]   %d: %s\n", i, NimBLEDevice::getBondedAddress(i).toString().c_str());
+#if PAREAMENTO_V2
+      Serial.printf("[bond] registros de identidade (host): %d\n", ble_rpa_get_num_peer_dev_records());
+#endif
       continue;
     }
     if (nome == "dream") {             // dream on|off|liga|desliga|cor RR GG BB|ef N
@@ -3248,8 +3281,19 @@ void setup() {
     // (os apps nao conectam / GATT vazio no nRF). Entre "controle de midia nao
     // repareia" e "os apps funcionam", os apps ganham. O re-pareamento do controle
     // fica como limitacao conhecida ate um conserto dedicado que nao ligue a resolucao.
+#if PAREAMENTO_V2
+    // V2: NAO mandamos a nossa identidade (o "S16 Controle" ja usa um endereco
+    // fixo proprio, random static, que serve de identidade) e PEDIMOS a do
+    // celular. A IRK dele vai para a lista de resolucao do HOST: o controlador
+    // continua sem resolver nada, entao as conexoes dos apps ficam como antes.
+    NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC);
+    NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
+    Serial.println("[bond] PAREAMENTO_V2: identidade do celular resolvida no host");
+#else
     NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
     NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC);
+    Serial.println("[bond] pareamento antigo (PAREAMENTO_V2 0)");
+#endif
   }
 
   // DIAGNOSTICO (pareamento): quantos bonds foram restaurados da memoria no boot.
@@ -3260,6 +3304,9 @@ void setup() {
     Serial.printf("[bond] restaurados no boot: %d\n", nb);
     for (int i = 0; i < nb; i++)
       Serial.printf("[bond]   %d: %s\n", i, NimBLEDevice::getBondedAddress(i).toString().c_str());
+#if PAREAMENTO_V2
+    Serial.printf("[bond] registros de identidade (host): %d\n", ble_rpa_get_num_peer_dev_records());
+#endif
   }
 
   server = NimBLEDevice::createServer();
