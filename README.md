@@ -33,11 +33,11 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 
 | # | Frente | Próximo passo concreto |
 |---|---|---|
-| 1 | **Bateria do display** | 18650 de teste no lugar do powerbank. Conferir a leitura (`bat` no Serial / Ajustes) com o multímetro, com e sem USB. Depois: célula fina `404070` (~1300 mAh) e decidir o corte por bateria baixa (a placa não protege a célula). |
-| 2 | **Controle da buzina como botões do polegar** | ✅ Buzina pareada com o display (12/10). Agora: ligar o receptor SRX882S no IO3 e testar o mapa dos botões (ver seção 9). Depois: funções para o cadeado fechado e os toques longos. |
-| 3 | **Luz de freio** | ✅ Feita (14/10) — **testar andando**: ver se os limites (−2 A acende, −0,8 A apaga) ficam bons na prática (descida longa também regenera e acende). Ver [Luz de freio](#luz-de-freio). |
+| 1 | **Pareamento do S16 Controle (PAREAMENTO_V2)** | ✅ Funcionou em 15/10 (reinício, sono e bateria desconectada: o controle volta sozinho). Confirmar no uso do dia a dia: depois de >15 min (o celular troca o endereço "no ar"), com os apps juntos e numa volta de verdade. Se seguir firme, passa para "Funcionando". |
+| 2 | **Luz de freio** | ✅ Feita (14/10) — **testar andando**: ver se os limites (−2 A acende, −0,8 A apaga) ficam bons na prática (descida longa também regenera e acende). Ver [Luz de freio](#luz-de-freio). |
+| 3 | **Bateria do display** | 18650 de teste no lugar do powerbank. Conferir a leitura (`bat` no Serial / Ajustes) com o multímetro, com e sem USB. Depois: célula fina `404070` (~1300 mAh). O corte por bateria baixa já existe (dorme abaixo de 3,30 V). |
 
-**Concluídos** (já na ponte v5 MIDIA): ✅ MPU, ✅ piezo/som, ✅ piscas 433 MHz (tela + botões), ✅ mochila Dream (tela + conectar), ✅ cortina de Ajustes + tela de config do MPU, ✅ print da tela, ✅ barra de ícones com bateria.
+**Concluídos** (na ponte v5 MIDIA): ✅ MPU (tela pelo pulso + config na tela), ✅ som (piezo), ✅ piscas 433 MHz, ✅ mochila Dream (tela, conectar, estado salvo), ✅ cortina de Ajustes, ✅ print da tela, ✅ barra de ícones com bateria e "carregando", ✅ pico do PWM, ✅ controle da buzina como botões do display (receptor no IO3) + buzina externa pareada com o display, ✅ dormir/acordar (sozinho, botão, acorda mexendo), ✅ indicadores das lanternas na principal, ✅ luz de freio, ✅ pareamento do S16 Controle que sobrevive ao reinício (V2, em observação).
 
 **Lembrete de pedal:** desativar a **economia de bateria do celular** antes de rodar — com ela ligada o GPS do EUC World ficou falhando na metade da volta de 11/10.
 
@@ -47,34 +47,47 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 
 ### Funcionando ✅
 
-- Ponte BLE estável: o display conecta na roda e se apresenta aos celulares com o mesmo nome e os mesmos serviços (clone completo da GATT).
+**Ponte BLE**
+- O display conecta na roda e se apresenta aos celulares com o mesmo nome e os mesmos serviços (clone completo da GATT).
 - **EUC World, Mono Riders, WheelLog e app da KingSong** funcionando pela ponte, com **2 apps garantidos** (já rodaram os 4 juntos na v5 2APPS, com o Android dividindo conexões).
 - **WheelLog só funciona na v5 2APPS:** ele exige a lista de serviços idêntica à da roda, e a v5 MIDIA tem 2 serviços a mais (HID `1812` e bateria `180F`).
-- **Controle de mídia** (v5 MIDIA): música e volume do celular direto pelo display, numa identidade Bluetooth separada ("S16 Controle").
-- 3 telas por deslize: **BMS** ← **principal** → **controles**.
-- Integração confirmada: apps + telemetria + controle de mídia + MPU + piezo + 433 rodando juntos (apps caíram uma vez por **resíduo de pareamento no celular**, não por bug — resolvido com a faxina acima).
-- **MPU na ponte (parte 1):** a tela acende/apaga pela posição do pulso. Começa desligado; ative pelo Serial: `mpu on` depois `mpu gravar` (na posição de olhar). Comandos: `mpu` (status), `mpu on`/`mpu off`, `mpu gravar`. O deep sleep ("roda sumiu") fica para o marco de energia. Tocar na tela sempre acende.
-- **Mochila/Dream na ponte (parte 4, Etapa 1):** o display vira **2º cliente BLE** (conecta no Dream, endereço fixo `2B:80:04:13:0E:4D`, tipo PUBLIC com fallback RANDOM), **sob comando** pelo Serial (`dream on`/`off`/`liga`/`desliga`/`cor RR GG BB`/`ef N`), só para provar coexistência com roda+apps. **Coexistência PROVADA** com `MAX_CONNECTIONS` ainda em **6**: roda + 3 apps + controle de mídia + cliente do Dream juntos, ninguém caiu (o bump para 7 era precaução, não foi preciso). **Etapa 2a:** conexão **assíncrona** + **5ª tela "Mochila"** (liga/cores/brilho/efeito/DEMO/veloc), estado reaplicado ao (re)conectar, Dream só conecta **depois da roda**. Serial: `dream on|off|liga|desliga|cor RR GG BB|ef N`.
-- **Dream: NÃO era limite de buffer.** O flood `Failed to allocate buffer` + `falhou (13)` vinha da conexão **assíncrona** (`connect(a,true,true)`), não de falta de recurso — a conexão **bloqueante** funciona com tudo conectado (roda+apps+controle+Dream), provado na Etapa 1. Solução: conexão **bloqueante** com `setConnectTimeout(2500)` (ausente = ~2,5 s de tentativa, não trava; nova tentativa a cada 15 s) e só depois da roda. `DREAM_AUTO` volta a **true**. Falta a **luz de freio** (Etapa 2b).
-- **Mochila na barra + botão conectar:** ícone de 3 bolinhas em triângulo RGB no topo (conectado=RGB, tentando=pisca amarelo, desligado=cinza). Botão **CONECTAR/DESCONECTAR** na tela Mochila (= `dream on`/`off`, salvo em `DREAM_AUTO`): desconectar não tenta nada (sem travadinha); conectar tenta a cada 15 s se o módulo some.
-- **433/piscas na ponte (parte 3 + tela):** transmissor STX882 no IO21 (RMT, independente de BLE/I2C). **Piscas = lanterninhas tipo bike** (par no capacete + par na traseira do mono), controladas pelo 433 — não confundir com o módulo iFlight/Dream (BLE). Tela "Piscas / Luz" (4ª tela, deslize após controles): escolhe o modo parado (apagado/laranja/vermelho/piscando) e os piscas ESQ/DIR. **Botões físicos IO2 (esq) / IO3 (dir)** ao GND. Lógica: apertar o pisca liga; apertar de novo **volta ao modo base** (não manda "desligar"), então se estava vermelho volta a vermelho. `luz_base` salvo na flash. Serial: `433 e|d` (pisca, toggle), `433 x|l|v|p` (modo base). Luz de freio automática (vermelho na frenagem) entra depois.
-- **Som na ponte (parte 2):** codec ES8311 (config por I2C no `loop`/`setup`) + I2S numa **tarefa separada** (só mexe no I2S, não briga com o touch/MPU). Bipe de confirmação ao apertar a buzina (BOOT). Comandos Serial: `som bipe`, `som alarme`, `som on`/`som off`. `SOM_ON` liga/desliga (salvo). Frequência fixa em 4 kHz (ressonância do piezo de 35 mm). Alarmes de PWM entram depois, usando `somAlarme()`.
-- Buzina no botão BOOT e na tela; farol (liga/desliga/auto), LEDs, volume da roda.
-- Logs no cartão SD: eventos sempre, viagem sob demanda (5 linhas/s).
+- **Controle de mídia** (v5 MIDIA): música e volume do celular direto pelo display, numa identidade Bluetooth separada ("S16 Controle"). **Desde 15/10 (PAREAMENTO_V2) o pareamento sobrevive** a reinício, sono e falta de bateria: o controle volta sozinho. Ver [Controle de mídia](#controle-de-mídia-v5-midia).
+- **Coexistência provada** com `MAX_CONNECTIONS` 6: roda + apps + controle de mídia + cliente da mochila (Dream) + MPU + som + 433, ninguém caiu.
 - Relógio acertado pela própria roda ao conectar.
-- Configuração pelo Serial, salva na flash.
+
+**Tela e controles**
+- 3 páginas por deslize (**BMS** ← **principal** → **controles**) + **cortina de Ajustes** (de cima) + **cortina dos Piscas** (de baixo). Ver [Telas](#telas-deslizar-o-dedo).
+- Velocidade com cor pelo PWM, barra de PWM com **pico** (segura 5 s), indicadores das lanternas dos lados da velocidade.
+- Barra de cima só com ícones: roda, apps, controle de mídia, buzina, mochila, ventoinha, gravação, bateria do display (com raio de "carregando") e hora.
+- Buzina no botão BOOT e na tela; farol (liga/desliga/auto), LEDs, volume da roda.
+- **Print da tela** em BMP no cartão (`/prints`).
+
+**Periféricos**
+- **MPU-6050:** a tela acende/apaga pela posição do pulso (`Tela auto` na cortina, começa desligado). Config na tela: GRAVAR a posição de olhar, ângulos de acender/apagar, PADRÃO. Também acorda o display do sono, se `Acorda mexendo` estiver ligado.
+- **Som:** codec ES8311 + I2S numa tarefa separada, piezo a 4 kHz (ressonância do piezo de 35 mm). Bipes de confirmação e alarme de bateria baixa. `Som` na cortina liga/desliga.
+- **Piscas / lanternas 433 MHz** (STX882 no IO21, RMT): modo base (apagado/laranja/vermelho/piscando, salvo) e piscas esq/dir na cortina de baixo; apertar o pisca de novo volta ao modo base.
+- **Controle da buzina como botões do display** (receptor SRX882S no IO3): buzina da roda, piscas esq/dir, buzina externa e desligar o alarme dela. Ver [Controle da buzina](#controle-da-buzina-sem-fio-43392-mhz).
+- **Buzina externa** pareada com a identidade do display (`00 9F 1D`): tela com as 7 funções do controle original.
+- **Mochila (Dream) como 2º cliente BLE:** conecta sozinha depois da roda (conexão bloqueante, 2,5 s, nova tentativa a cada 15 s), tela própria (liga, cores, brilho, efeito, DEMO, velocidade), estado salvo na flash e reaplicado ao reconectar.
+- **Luz de freio** automática pela corrente negativa: lanternas vermelhas + mochila vermelha no máximo. Ver [Luz de freio](#luz-de-freio).
+
+**Energia**
+- Leitura da bateria no IO9, % e "carregando" (USB do PC ou degrau de tensão). Alarme abaixo de 3,35 V.
+- **Dorme sozinho** (10 min sem roda e sem USB, ou bateria < 3,30 V), botão **Dormir** na cortina, acorda no BOOT (ou mexendo). Ao acordar, lanternas e mochila voltam como estavam.
+
+**Registros e configuração**
+- Logs no cartão SD: eventos sempre, viagem sob demanda (5 linhas/s).
+- Configuração pelo Serial e pela tela, salva na flash. Versão do firmware no Serial e no rodapé da cortina.
 
 ### Em andamento 🔧
 
-- Protocolo do módulo de LEDs Dream: comandos decifrados, falta a resposta de estado e o número de efeitos.
+- Protocolo do módulo de LEDs Dream: comandos e resposta de estado decifrados; o índice do efeito não aparece na resposta e os quadros `D0`/`A0` seguem sem significado (baixa prioridade).
+- PAREAMENTO_V2 em observação (ver [Foco atual](#1-foco-atual)).
 
 ### Problemas conhecidos ⚠️
 
 - **Um 3º app** às vezes funciona porque o Android coloca dois apps na mesma conexão, mas pode cair em cascata. Garantido: 2 apps.
-- ⭐ **EM ABERTO (resolver): o controle de mídia repareia a cada vez que o display reinicia/religa.** Cenário real: parar pra tomar um sorvete, a luva fica parada, o display dorme; ao voltar, o display religa e o controle **não reconecta sozinho** — tem que parear de novo. Para um produto final isso não é aceitável. Causa do beco: guardar a identidade (IRK) do celular conserta o reconhecimento **mas liga a resolução de endereço no controlador, o que derruba as conexões dos apps na identidade da roda** (testado e confirmado). Hoje: `setSecurityInitKey(ENC|ID)` + `setSecurityRespKey(ENC)` → apps OK, controle repareia. Caminhos a investigar (dedicado, sem pressa): (a) HID sem bonding; (b) guardar a IRK mas manter o anúncio da roda conectável; (c) resolver o endereço do celular por software. Diagnóstico pronto: `bonds` no Serial e `[bond] restaurados no boot: N`. **Em teste: PAREAMENTO_V2 (caminho c)** — ver abaixo.
-  - **PAREAMENTO_V2** (chave `#define PAREAMENTO_V2` no topo do sketch; 1 = V2, 0 = jeito antigo). Três mudanças: (1) pede a IRK do celular (`setSecurityRespKey(ENC|ID)`); (2) **para de mandar a nossa identidade** (`setSecurityInitKey(ENC)`): ela era o endereço público = o da roda, o que podia fazer o celular "juntar" o S16 Controle com a roda; o S16 Controle já tem endereço próprio fixo (random static), que serve de identidade; (3) liga a **privacidade no host** da NimBLE (`CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY 1` no `nimconfig.h`): a IRK vai para uma lista de resolução **em software**, o endereço do celular é resolvido na hora da conexão e o **controlador nunca liga a resolução** (era isso que derrubava os apps). No ESP32 "clássico" a NimBLE usa isso sempre; no S3 é opcional. Se o sketch estiver com V2 e a biblioteca sem a linha, a compilação para com um `#error` explicando.
-  - **Teste:** (0) `git tag antes-pareamento-v2` no commit anterior; (1) no celular, esquecer "S16 Controle" (e a roda, se aparecer pareada); no display, `esquecer` e reiniciar; (2) conectar os apps (EUC World etc.) → tudo como antes?; (3) parear o S16 Controle → teclas de mídia OK?; no Serial deve aparecer `[bond] no ar … | identidade …`; (4) **reiniciar o display** → o boot mostra `[bond] restaurados: 1` e `registros de identidade (host): 1`; o controle volta **sozinho**, sem pedir pareamento, e o log mostra a **mesma identidade** de antes; (5) apps continuam conectando; (6) repetir com o display dormindo e acordando (o caso do sorvete) e depois de >15 min (o celular troca o endereço "no ar").
-  - **Se algo quebrar:** `PAREAMENTO_V2 0` e compilar (a linha nova do `nimconfig.h` pode ficar; para voltar 100% ao estado anterior, comente-a também). Limpar os pareamentos dos dois lados depois de trocar.
+- **Limite de 3 pareamentos** guardados (`CONFIG_BT_NIMBLE_MAX_BONDS` padrão da NimBLE). Com um celular só não faz diferença; com mais aparelhos, aumentar no `nimconfig.h`.
 - Os comandos de próxima/anterior **da roda** (`95`) pulam mais de uma música (é da roda, acontece também no app da KingSong). A v5 MIDIA resolve controlando o celular direto.
 - O app da KingSong mostra o histórico com horário deslocado (bug de fuso do app; a roda guarda a hora local certa).
 
@@ -102,23 +115,25 @@ ESP32-S3 (16 MB flash, 8 MB PSRAM OPI), tela IPS 2,8" 240×320 (ILI9341V, SPI), 
 | Conector | Pinos | Plano de uso |
 |---|---|---|
 | I2C | 3.3V, GND, IO15 (SCL), IO16 (SDA) | **MPU-6050 (0x68)** no mesmo barramento do touch (0x38) e do codec ES8311 (0x18), usando as funções `lgfx::i2c` da LovyanGFX (testado: 0 erros com o touch em uso) |
-| GPIO | IO21, IO14, IO3, IO2 | IO21 = STX882 (transmissor 433 MHz); IO14 = INT do MPU (**já ligado**; ainda sem uso no firmware); **IO3 = DATA do receptor SRX882S** (controle 433); IO2 = livre (era botão do pisca; os botões físicos foram desligados com `BOTOES_PISCA = false`) |
-
-**Receptor SRX882S no display:** VCC → 3V3 · GND → GND · **CS → 3V3** (obrigatório: solto = dormindo) · DATA → IO3 · antena espiral. Alimentado em **3,3 V** (não 5 V), para a saída DATA não mandar 5 V no ESP32.
-| UART | 5V, GND, TXD (IO44), RXD (IO43) | livre: 5 V para receptor 433 MHz, ou UART para GPS |
+| GPIO | IO21, IO14, IO3, IO2 | IO21 = STX882 (transmissor 433 MHz); IO14 = INT do MPU (acorda o display do sono com `Acorda mexendo`); **IO3 = DATA do receptor SRX882S** (controle 433); IO2 = livre (era botão do pisca; os botões físicos foram desligados com `BOTOES_PISCA = false`) |
+| UART | 5V, GND, TXD (IO44), RXD (IO43) | livre (ex.: UART para GPS) |
 | BAT | + / − | LiPo 3,7 V (**conferir a polaridade antes de ligar!**). Carregador **TP4054** na placa (até 500 mA): carrega sozinho com o USB-C ligado, nada a fazer no firmware. Com USB presente a placa roda pelo USB (Q3 corta a bateria). ⚠️ **A placa não tem proteção de descarga**: usar célula **com placa de proteção (PCM)** — 18650 "protegida" ou LiPo "with protection board". |
 | SPEAKER | 2 pinos | piezo passivo + 100 Ω em série (saída em ponte: nenhum dos pinos é GND) |
 | BOOT (IO0) | soldar nos pads do botão | botão da buzina em paralelo (não segurar ao ligar a placa) |
+
+**Receptor SRX882S no display:** VCC → 3V3 · GND → GND · **CS → 3V3** (obrigatório: solto = dormindo) · DATA → IO3 · antena espiral. Alimentado em **3,3 V** (não 5 V), para a saída DATA não mandar 5 V no ESP32.
 
 Não há outros pinos livres no chip. Para mais portas: **MCP23017** (16 GPIO por I2C).
 
 ### Outros
 
 - **2× ESP32-C3 Supermini**: protótipos (ponte v3 com LCD 16×2, captura de 433 MHz) e, no futuro, controlador da fita de LED da mochila.
-- **Módulo de LEDs iFlight "Dream#0E4D"**: mochila dos drones, controlado pelo app Happy Lighting.
-- **Receptor/transmissor 433 MHz**: FS1000A + MX-RM-5V (gaveta); STX882 + SRX882 (melhor, a comprar).
-- **MPU-6050** (GY-521).
-- Controle dos piscas sem fio: 433,92 MHz (cristal de 13,56 MHz × 32).
+- **Módulo de LEDs iFlight "Dream#0E4D"**: mochila dos drones, controlado pelo app Happy Lighting — e agora pelo display.
+- **Rádio 433 MHz**: **STX882** (transmissor, no display, IO21) + **SRX882S** (receptor, no display, IO3). FS1000A + MX-RM-5V na gaveta.
+- **MPU-6050** (GY-521), no I2C do display, INT no IO14.
+- **Lanternas/piscas tipo bike** (par no capacete + par na traseira do mono), controle sem fio 433,92 MHz.
+- **Buzina sem fio 433 MHz** com controle de 5 botões (o controle virou entrada do display; a buzina obedece à identidade do display).
+- Bateria de teste: 18650 protegida (definitiva: LiPo fina `404070` com proteção).
 
 ---
 
@@ -131,11 +146,13 @@ Não há outros pinos livres no chip. Para mais portas: **MCP23017** (16 GPIO po
 
 - Core **esp32 by Espressif 3.3.12**.
 - Bibliotecas:
-  - **NimBLE-Arduino 2.5.1** — **COM O PATCH** da pasta `patch_nimble_2.5.1/` (ver o README de lá). Sem o patch: o EUC World recusa a ponte, a placa reinicia ao desconectar apps e os anúncios são recusados.
+  - **NimBLE-Arduino 2.5.1** — **COM O PATCH** da pasta `patch_nimble_2.5.1/` (ver o README de lá). Sem o patch: o EUC World recusa a ponte, a placa reinicia ao desconectar apps e os anúncios são recusados. O `nimconfig.h` do patch também liga a **privacidade no host** (`CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY 1`), exigida pelo `PAREAMENTO_V2` — sem ela a compilação para num `#error` que explica.
   - **LovyanGFX** (lovyan03).
   - `SD_MMC` e `Preferences` já vêm com o core.
 
-> ⚠️ **Não atualize a NimBLE-Arduino** sem refazer o patch. Ao trocar de PC: instale a 2.5.1 e copie os 5 arquivos do patch.
+> ⚠️ **Não atualize a NimBLE-Arduino** sem refazer o patch. Ao trocar de PC: instale a 2.5.1 e copie os 5 arquivos do patch. Mudar o `nimconfig.h` faz a biblioteca inteira recompilar (a 1ª compilação demora mais).
+
+**Chaves no topo do sketch:** `USAR_SOM` (0 desliga todo o som, para isolar problemas) e `PAREAMENTO_V2` (1 = pareamento novo do S16 Controle; 0 = jeito antigo, que repareia a cada reinício).
 
 ### Menu Ferramentas (ES3C28P)
 
@@ -171,7 +188,9 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 | `ks_s16_ponte_v5_midia/` | **Versão principal**: ponte + 2 apps + controle de mídia (2 identidades BLE) |
 | `ks_s16_ponte_v5_2apps/` | Mesma ponte, sem controle de mídia (mais simples, fallback estável; **a única que funciona com o WheelLog**) |
 | `patch_nimble_2.5.1/` | Os 5 arquivos corrigidos da NimBLE e onde vai cada um |
-| `ks_s16_ponte_v3.ino` | Versão antiga para o ESP32-C3 com LCD 16×2 |
+| `ks_s16_ponte_v4_s3/` | v4: primeira versão no ES3C28P (3 telas, buzina no BOOT, logs, mídia HID). Histórico |
+| `ks_s16_ponte/` | v3: ponte com clone completo da GATT no ESP32-C3 + LCD 16×2. Histórico |
+| `ks_s16_lcd_test/` | Primeiro teste: roda → ESP32-C3 → LCD 16×2. Histórico |
 | `galeria_fotos/` | Exemplo de aprendizado: tela + touch + sprites + zoom (+ script `converter_fotos.py`) |
 | `captura_433/` | Sketch para descobrir os códigos do controle dos piscas (ESP32-C3) |
 | `teste_i2c_mpu/` | Teste do MPU-6050 dividindo o I2C com o touch (Plano A LovyanGFX / Plano B Wire1) |
@@ -179,6 +198,8 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 | `teste_mochila/` | Display como cliente BLE do módulo Dream: liga/cor/efeito/handshake |
 | `teste_piezo/` | Teste do piezo no SPEAKER: ES8311 + I2S, varredura para achar a ressonância, bipe/pisca/alarme |
 | `teste_tela_mpu/` | Teste: acender/apagar a tela pela posição do pulso + deep sleep parado (acorda pelo BOOT ou INT do MPU) |
+| `prints/` | Prints da tela tirados pelo display (cópias do cartão) |
+| `Conexões.drawio` | Diagrama das ligações |
 
 ---
 
@@ -247,9 +268,15 @@ Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanter
 
 ### Controle de mídia (v5 MIDIA)
 
-1. Pareie **"S16 Controle"** nas configurações de Bluetooth do celular (uma vez).
+1. Pareie **"S16 Controle"** nas configurações de Bluetooth do celular (**uma vez só**: com o `PAREAMENTO_V2`, depois de reiniciar, dormir ou ficar sem bateria o display reconhece o celular e o controle reconecta sozinho).
 2. Os apps continuam conectando em **"KSN-S16P--4C4B"**, sem pareamento.
-3. Problema? Esqueça os dois no celular, digite `esquecer` no Serial e pareie de novo.
+3. Problema? Esqueça os dois no celular, digite `esquecer` no Serial, reinicie o display e pareie de novo (ver a [faxina](#10-lições-aprendidas-as-pegadinhas)).
+
+**Como funciona o PAREAMENTO_V2** (15/10): o celular usa um endereço "no ar" que muda a cada ~15 min (RPA); para reconhecê-lo depois de um reinício, o display precisa da **IRK** (a "chave de identidade") dele. Pedir a IRK sempre consertou isso, mas a NimBLE então ligava a resolução de endereço **no controlador** do rádio, e isso derrubava os apps na identidade da roda. A V2: (1) pede a IRK do celular (`setSecurityRespKey(ENC|ID)`); (2) **não manda a nossa identidade** (`setSecurityInitKey(ENC)` — ela era o endereço público = o da roda, e podia fazer o celular "juntar" o S16 Controle com a roda; o S16 Controle já tem endereço próprio fixo, random static); (3) liga a **privacidade no host** da NimBLE: a IRK vai para uma lista **em software**, o endereço é resolvido na hora da conexão e o controlador nunca liga a resolução. No ESP32 "clássico" a NimBLE usa isso sempre; no S3 é opção do `nimconfig.h`.
+
+**Diagnóstico no Serial:** no boot, `[bond] restaurados no boot: N` e `[bond] registros de identidade (host): N`; ao parear/reconectar, `[bond] no ar XX | identidade YY` (a identidade tem que ser a mesma depois de reiniciar). `bonds` mostra os dois números a qualquer hora.
+
+**Voltar atrás:** `PAREAMENTO_V2 0` no sketch (a linha do `nimconfig.h` pode ficar; para voltar 100% ao estado antigo, comente-a também) e faxina dos pareamentos dos dois lados. O commit anterior tem a tag `antes-pareamento-v2`.
 
 ### Logs no cartão (`/logs`)
 
@@ -262,12 +289,13 @@ Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanter
 |---|---|
 | `config` | mostra a configuração |
 | `config padrao` | volta aos valores de fábrica |
-| `DUMP_PHONE = false` | (e `DUMP_HEX`, `DUMP_NOVOS`, `DUMP_OTHER`, `IGNORA_CANCELAR`) liga/desliga; fica salvo na flash |
+| `NOME = valor` | muda uma opção e salva na flash. Liga/desliga: `DUMP_HEX`, `DUMP_PHONE`, `DUMP_NOVOS`, `DUMP_OTHER`, `IGNORA_CANCELAR`, `TELA_AUTO`, `SOM_ON`, `DREAM_AUTO`, `ACORDA_MEXENDO`, `FREIO_AUTO` (ex.: `DUMP_PHONE = false`) |
 | `NAME_FILTER = KS` / `TARGET_MAC = c5:39:...` / `TARGET_MAC = -` | como achar a roda (vale ao reiniciar) |
 | `t 95 6 FF` | envia o comando `95` com o byte 6 = `FF` (experimentos) |
 | `raw AA 55 ... 5A 5A` | envia 20 bytes exatos (ex.: um frame capturado) |
-| `esquecer` | apaga os pareamentos (v5 MIDIA) |
-| `bonds` | lista os pareamentos guardados |
+| `esquecer` | apaga os pareamentos (v5 MIDIA); esqueça no celular também |
+| `bonds` | lista os pareamentos guardados e os registros de identidade (V2) |
+| `freio` | simula a luz de freio por 2,5 s |
 | `print` | salva a tela agora em `/prints/print_NNN.bmp` |
 | `dormir` | dorme agora (deep sleep); o BOOT acorda |
 | `comandos` (ou `ajuda`, `?`) | lista todos os comandos |
@@ -292,9 +320,10 @@ Prefixos no Serial: `C>` app → roda · `D>` display → roda · `R?` resposta 
 
 - **Clone da GATT em 3 etapas:** conecta → grava o modelo dos serviços → **desconecta** → monta o servidor (a NimBLE não deixa montar com conexão aberta) → reconecta e mapeia.
 - Os serviços genéricos **1800/1801 precisam ser idênticos aos da roda** (o EUC World confere): resolvido no patch.
-- **Duas identidades** (anúncio estendido): a roda (sem pareamento) e o "S16 Controle" (pareado, endereço próprio). Assim o pareamento não "contamina" a conexão dos apps.
+- **Duas identidades** (anúncio estendido): a roda (sem pareamento) e o "S16 Controle" (pareado, endereço próprio random static, derivado do MAC). Assim o pareamento não "contamina" a conexão dos apps. O display só distribui a chave de cifragem, nunca a identidade dele; a do celular é resolvida no host (`PAREAMENTO_V2`).
+- **Cliente duplo:** além da roda, o display é cliente da mochila (Dream), conectando só depois da roda.
 - Cada notificação é enviada **por conexão** para quem assinou; o cancelamento da FFE1 é ignorado (`IGNORA_CANCELAR`) porque o Android às vezes coloca dois apps na mesma conexão.
-- **Orçamento do rádio:** com anúncio estendido, conexões + anúncios ≤ `MAX_CONNECTIONS − 1`. Com `MAX_CONNECTIONS 6`: roda + 2 apps + controle + anúncio. A mochila (Dream) vai precisar de mais uma vaga.
+- **Orçamento do rádio:** com anúncio estendido, conexões + anúncios ≤ `MAX_CONNECTIONS − 1`. Com `MAX_CONNECTIONS 6`: roda + 2 apps + controle + anúncio — e na prática **coube também o cliente da mochila** (provado com tudo conectado; o aumento para 7 não foi preciso).
 
 ---
 
@@ -452,10 +481,10 @@ Recaptura de 12/10 (2 toques + 2 segurando cada botão): buzina, alarme liga e d
 | volume + | `99` | pisca **esquerda** |
 | volume − | `CC` | pisca **direita** |
 | cadeado aberto | `33` | buzina **externa** (o display manda `00 9F 1D AA`) |
-
-**Colisão no ar (12/10):** no 1º teste a buzina externa e os piscas funcionavam "às vezes", mesmo com o display transmitindo toda vez. Motivo: o display respondia em ~80 ms, **com o dedo ainda no botão**, e o controle seguia transmitindo — dois sinais na mesma frequência ao mesmo tempo se embaralham. Agora as ações que usam o rádio 433 (piscas, buzina externa) **esperam o controle parar** (150 ms sem quadros = soltou). A buzina da roda (Bluetooth) continua na hora.
 | cadeado fechado | `55` | **desliga o alarme** da buzina externa (o display manda `00 9F 1D 33`) |
 | segurar vol± | `66` / `FF` | livres (aparece `[433 rx] botao XX sem funcao` no Serial) |
+
+**Colisão no ar (12/10):** no 1º teste a buzina externa e os piscas funcionavam "às vezes", mesmo com o display transmitindo toda vez. Motivo: o display respondia **com o dedo ainda no botão**, e o controle seguia transmitindo — dois sinais na mesma frequência ao mesmo tempo se embaralham. Agora as ações que usam o rádio 433 (piscas, buzina externa) **esperam o controle parar**. A buzina da roda (Bluetooth) continua na hora.
 
 O display só age depois de 2 quadros iguais (contra ruído) e **uma vez por aperto**. Ações pelo 433 saem **80 ms depois que o controle para** de transmitir (era 150 ms); o Serial mostra `[433 rx] controle transmitiu X ms` — se X for grande num toque rápido, a demora é do próprio controle. Ele ignora tudo que não for a identidade `00 9F 1C` (piscas, o próprio display transmitindo a buzina externa...). Enquanto o display transmite no 433 (~0,5–0,8 s), o receptor fica "surdo".
 
@@ -463,13 +492,13 @@ Obs.: a sensibilidade do alarme se ajusta nos botões de volume, logo depois do 
 
 Curiosidade: cada cmd é um nibble repetido (A·A, C·C, 9·9, 5·5, 3·3). Obs.: o detector automático do `captura_433` confundiu o intervalo de ~1226 µs com o "longo"; a decodificação acima foi feita separando as repetições por esse intervalo.
 
-**Plano de teste do pareamento (12/10):**
+**Plano de teste do pareamento (12/10) — ✅ feito, deu certo (buzina guarda 1 controle só):**
 1. Com o display, mandar o código **original** da buzina: `433 raw 009F1CAA`. Se ela tocar, o display imita o controle certinho (e o `captura_433` no C3 pode conferir que o quadro saiu igual ao do controle).
 2. Pôr a buzina em modo de aprendizado (segurar o touch liga/desliga, como no dia em que ela "voltou a funcionar") e mandar uma identidade **nova**: `433 raw 009F1DAA`.
 3. Testar os dois: se a buzina passar a obedecer o `9F1D` e **parar** de obedecer o controle original → guarda **1** controle só (provável). Se obedecer os dois → guarda vários (aí precisa descobrir como apagar a memória dela).
 4. Se der certo: o controle original vira entrada **só do display** (receptor SRX882S) e o display repassa a buzina com a identidade dele — sem conflito com vol±/alarme.
 
-⚠️ **A própria buzina obedece a este controle.** Se ele virar "botões do display" com a buzina ligada no monociclo, vol± mexe no volume dela e **liga arma o alarme de movimento** (andando, dispara). Ver discussão em [Ideias guardadas](#12-ideias-guardadas).
+Por isso a buzina **não obedece mais ao controle original** (só à identidade do display): o controle virou botões do display sem o risco de vol± mexer no volume dela ou o cadeado armar o alarme andando.
 
 ---
 
@@ -487,7 +516,8 @@ Curiosidade: cada cmd é um nibble repetido (A·A, C·C, 9·9, 5·5, 3·3). Obs.
 - Descoberta de descritores devolve `0x2803` (declarações) por engano: clonar só `0x2901`.
 - **Bug da biblioteca:** arrays indexados pelo número da conexão estouravam com handle ≥ 4 → reinício ao desconectar. Corrigido no patch.
 - O nº de "atividades" do rádio vem de `CONFIG_BT_NIMBLE_MAX_CONNECTIONS`; com anúncio estendido, `advertiseOnDisconnect` não existe.
-- No pareamento, não entregar a identidade **do display** (senão o Android junta as duas identidades), mas aceitar a **do celular** (senão cada reconexão/reboot pede novo pareamento). **Pegadinha:** na NimBLE, `setSecurityInitKey` = chaves que o **display** distribui (`our`) e `setSecurityRespKey` = chaves que o **celular** distribui (`their`) — o contrário do que o nome sugere. **MAS** pedir a IRK do celular liga a resolução de endereço e derruba o clone da roda (apps não conectam). Conflito real: ficamos com `setSecurityInitKey(ENC|ID)` + `setSecurityRespKey(ENC)` (apps OK, controle repareia). Diagnóstico: `bonds` no Serial e `[bond] restaurados no boot: N`.
+- No pareamento, não entregar a identidade **do display** (senão o Android junta as duas identidades), mas aceitar a **do celular** (senão cada reconexão/reboot pede novo pareamento). **Pegadinha:** na NimBLE, `setSecurityInitKey` = chaves que o **display** distribui (`our`) e `setSecurityRespKey` = chaves que o **celular** distribui (`their`) — o contrário do que o nome sugere.
+- Guardar a IRK do celular com a privacidade **no controlador** (padrão no S3) liga a resolução de endereço no rádio e derruba o clone da roda (apps não conectam). **Solução (15/10):** privacidade **no host** (`CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY 1`): a NimBLE resolve o endereço do celular em software, guarda os "registros de identidade" na flash e o controlador fica de fora. Ver [Controle de mídia](#controle-de-mídia-v5-midia).
 
 **Pareamento — tiques cosméticos:** o primeiro toque pra parear o controle às vezes falha e só o segundo oferece parear; o controle pode aparecer no Android com um nome tipo "82CE"/ícone de controle. Ambos inofensivos.
 
@@ -522,13 +552,18 @@ Curiosidade: cada cmd é um nibble repetido (A·A, C·C, 9·9, 5·5, 3·3). Obs.
 ### Agora → ver [Foco atual](#1-foco-atual)
 
 ### Próximo
-- [ ] **Tela da mochila** no display (liga/desliga, paleta, brilho, efeitos) → frente ativa nº 1.
-- [ ] **Luz de freio** pela corrente negativa (limite ~−2 A, com histerese) → frente ativa nº 2.
-- [ ] **Setas** por botão (mochila + piscas 433 MHz), com desligamento automático.
-- [x] **Bateria do display**: leitura no IO9 + ícone na barra + % nos Ajustes + alarme abaixo de 3,35 V (12/10/2026). Falta: conferir com multímetro, célula definitiva e corte automático.
-- [ ] **Energia**: chave física + sono automático quando a roda some (acordar pelo botão ou pelo INT do MPU).
+- [ ] **Funções para segurar vol± no controle** (`66` / `FF`, hoje livres).
 - [ ] **Alarmes**: PWM alto (som/tela piscando); bateria cheia + regeneração forte.
-- [ ] Botão externo de buzina no IO3.
+- [ ] **Setas com desligamento automático** (piscas que apagam sozinhos depois da curva).
+- [ ] Bateria: conferir a leitura com o multímetro e montar a célula definitiva.
+
+### Feito recentemente
+- [x] Bateria do display: leitura no IO9, ícone, % nos Ajustes, alarme abaixo de 3,35 V, "carregando" (12–13/10).
+- [x] Energia: dorme sozinho sem roda/USB ou com a bateria no fim, botão Dormir, acorda no BOOT ou mexendo (13–14/10).
+- [x] Tela da mochila + conectar pela cortina (14/10).
+- [x] Controle da buzina como botões do display + buzina externa pareada (12/10).
+- [x] Luz de freio (14/10) — falta ajustar os limites andando.
+- [x] S16 Controle sem repareamento (PAREAMENTO_V2, 15/10) — em observação.
 
 ### Depois
 - [ ] Teste de rua longo (alcance, reconexão, estabilidade).
@@ -543,14 +578,14 @@ Curiosidade: cada cmd é um nibble repetido (A·A, C·C, 9·9, 5·5, 3·3). Obs.
 Registradas para não se perderem — **não** são compromisso.
 
 **Display**
-- Tela acender por inclinação do braço (MPU, com histerese contra vibração).
+- ~~Tela acender por inclinação do braço~~ → **feito** (MPU, `Tela auto`).
 - Rotação automática da tela; detecção de queda.
 - Motor de vibração para alertas (sente no pulso).
-- Alto-falante de notebook (4–8 Ω) para bipes.
+- Alto-falante de notebook (4–8 Ω) para bipes mais altos que o piezo.
 - Teclado/tela de senha para destravar a roda (precisa decifrar o desafio-resposta).
-- ~~Painel de Ajustes "estilo Android" e print da tela~~ → **feitos em 12/10** (ver [Usando o display](#6-usando-o-display)). Falta no painel: botão **Desligar** (deep sleep, ver abaixo).
-- **Botões do polegar sem fio**: usar um controle 433 pequeno como entrada do display (o receptor SRX882S ouvindo no conector UART, IO43/IO44, alimentado em 3,3 V). Candidato: o controle da buzina (5 botões) — mas a buzina obedece a ele (ver protocolo na seção 9); alternativa: um controle 433 genérico de outra identidade, que a buzina ignora.
-- **Desligar segurando os 2 botões dos piscas** (deep sleep): desliga também a ponte BLE (apps perdem a roda), então é "desligar", não "apagar a tela". Antes de dormir, mandar "pisca off" pelo 433. Acordar pelos botões (ext1 em IO2/IO3); acordar por movimento só com o fio INT do MPU (IO14) — e provavelmente não é desejável no modo desligado.
+- ~~Painel de Ajustes "estilo Android" e print da tela~~ → **feitos em 12/10**; botão **Dormir** na cortina → **feito em 14/10**.
+- ~~Botões do polegar sem fio~~ → **feito em 12/10** com o controle da buzina e o receptor no IO3 (ver seção 9).
+- **Dormir pelo controle** (ex.: segurar um botão): os segurados `66`/`FF` estão livres. Lembrar que dormir derruba a ponte BLE (os apps perdem a roda).
 
 **Celular**
 - Notificações no display (Gadgetbridge como Bangle.js, Chronos, ou app próprio).
