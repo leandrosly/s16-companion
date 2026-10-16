@@ -1,4 +1,4 @@
-// VERSAO: v5-202610152244   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v5-202610152253   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -94,7 +94,7 @@ extern "C" int ble_rpa_get_num_peer_dev_records(void);
 #endif
 
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v5-202610152244";
+static const char* VERSAO = "v5-202610152253";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -3334,10 +3334,16 @@ void setup() {
 
 void loop() {
   {
-    // TELA_GIRADA mudou pelo Serial: gira na hora (o proximo quadro do sprite redesenha tudo)
+    // TELA_GIRADA mudou pelo Serial: gira na hora. O setRotation so vale para o que
+    // for desenhado DEPOIS; sem a roda (tela "Escaneando...") nada era redesenhado e
+    // parecia que o comando nao funcionou. Por isso reenvia o quadro atual na hora.
     static int rotAtual = -1;
     int rot = TELA_GIRADA ? 2 : 0;
-    if (rot != rotAtual) { tft.setRotation(rot); rotAtual = rot; }
+    if (rot != rotAtual) {
+      tft.setRotation(rot);
+      if (rotAtual >= 0) spr.pushSprite(0, 0);
+      rotAtual = rot;
+    }
   }
   if (doConnect) {
     doConnect = false;
