@@ -217,7 +217,7 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
     [ PISCAS ]   (arrastar pra baixo fecha)
 ```
 
-- **Ajustes (cortina de cima):** arraste pra **baixo** começando na barra de cima; arraste pra **cima** para fechar. Funciona **até sem a roda** (bancada). Botões: **MPU >** (abre a config), **Tela auto**, **Som**, **Mochila >** (abre a tela da mochila, com CONECTAR e LIGA/DESLIGA), **Buzina ext. >**, **Print** (salva a tela 3 s depois; a cortina **continua aberta** — deixa ela pra "printar" a própria cortina, ou arrasta pra cima e vai pra outra tela dentro dos 3 s), **Dormir** (2 toques: o 1º pede "certeza?"). Embaixo: bateria (V, % e "carregando"), cartão, sensores e a versão do firmware.
+- **Ajustes (cortina de cima):** arraste pra **baixo** começando na barra de cima; arraste pra **cima** para fechar. Funciona **até sem a roda** (bancada). Botões: **MPU >** (abre a config), **Tela auto**, **Som**, **Mochila >** (abre a tela da mochila, com CONECTAR e LIGA/DESLIGA), **Buzina ext. >**, **Print** (salva a tela 3 s depois; a cortina **continua aberta** — deixa ela pra "printar" a própria cortina, ou arrasta pra cima e vai pra outra tela dentro dos 3 s), **Dormir** (2 toques: o 1º pede "certeza?"), **Acorda mexendo** (o MPU acorda o display do sono). Embaixo: bateria (V, % e "carregando"), cartão, sensores e a versão do firmware.
 - **Mochila:** o botão do canto mostra o estado: **CONECTAR** (cinza) → **CONECTANDO...** (enquanto tenta, até 2,5 s) → **PROCURANDO...** (amarelo escuro, entre tentativas; tocar cancela) → **DESCONECTAR** (verde, conectada).
 - **Piscas (cortina de baixo):** nas páginas de deslizar há uma "alça" cinza no meio da borda de baixo; arrastando pra **cima** a partir dela abre a tela dos piscas/luz; arrastando pra **baixo**, fecha. Também funciona sem a roda.
 - **Buzina externa:** as 7 funções do controle original, mandadas com a identidade do display: **BUZINA**, volume −/+, **< som / som >** (= segurar vol+/vol− no controle: troca entre os 4 sons), alarme liga/desliga. Se o rádio 433 estiver ocupado, o comando espera na fila e sai em seguida. VOLTAR = tela principal. ✅ Testado em 12/10 (v5-202610122151): troca de sons funcionando pelo display, piscas na ordem certa pelo controle.
@@ -276,7 +276,7 @@ Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanter
 
 **Diagnóstico no Serial:** no boot, `[bond] restaurados no boot: N` e `[bond] registros de identidade (host): N`; ao parear/reconectar, `[bond] no ar XX | identidade YY` (a identidade tem que ser a mesma depois de reiniciar). `bonds` mostra os dois números a qualquer hora.
 
-**Voltar atrás:** `PAREAMENTO_V2 0` no sketch (a linha do `nimconfig.h` pode ficar; para voltar 100% ao estado antigo, comente-a também) e faxina dos pareamentos dos dois lados. O commit anterior tem a tag `antes-pareamento-v2`.
+**Voltar atrás:** `PAREAMENTO_V2 0` no sketch (a linha do `nimconfig.h` pode ficar; para voltar 100% ao estado antigo, comente-a também) e faxina dos pareamentos dos dois lados. A versão de antes da V2 é a `v5-202610142150` (tag `antes-pareamento-v2`).
 
 ### Logs no cartão (`/logs`)
 
@@ -289,7 +289,8 @@ Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanter
 |---|---|
 | `config` | mostra a configuração |
 | `config padrao` | volta aos valores de fábrica |
-| `NOME = valor` | muda uma opção e salva na flash. Liga/desliga: `DUMP_HEX`, `DUMP_PHONE`, `DUMP_NOVOS`, `DUMP_OTHER`, `IGNORA_CANCELAR`, `TELA_AUTO`, `SOM_ON`, `DREAM_AUTO`, `ACORDA_MEXENDO`, `FREIO_AUTO` (ex.: `DUMP_PHONE = false`) |
+| `NOME = valor` | muda uma opção e salva na flash. Liga/desliga: `DUMP_HEX`, `DUMP_PHONE`, `DUMP_NOVOS`, `DUMP_OTHER`, `IGNORA_CANCELAR`, `TELA_AUTO`, `SOM_ON`, `DREAM_AUTO`, `ACORDA_MEXENDO`, `FREIO_AUTO`, `TELA_GIRADA` (ex.: `DUMP_PHONE = false`) |
+| `TELA_GIRADA = true` / `false` | gira a tela **e o touch** 180° (lado largo/USB-C pro outro lado, para a caixa); vale na hora e fica salvo |
 | `NAME_FILTER = KS` / `TARGET_MAC = c5:39:...` / `TARGET_MAC = -` | como achar a roda (vale ao reiniciar) |
 | `t 95 6 FF` | envia o comando `95` com o byte 6 = `FF` (experimentos) |
 | `raw AA 55 ... 5A 5A` | envia 20 bytes exatos (ex.: um frame capturado) |
@@ -538,7 +539,7 @@ Por isso a buzina **não obedece mais ao controle original** (só à identidade 
 - `rmtTransmitCompleted()` pode ficar preso em "ocupado" após um envio assíncrono e travar TODOS os envios seguintes. Não dependa dele: espace os envios por **tempo** (`millis()`), calculado pela duração da rajada. Fila de 1 posição (último comando ganha) cobre cliques rápidos.
 
 **Placa**
-- Touch girado 180° em relação à imagem.
+- Touch girado 180° em relação à imagem (já compensado na config: `INVERTER_TOUCH_X/Y`). Para girar a tela inteira use `TELA_GIRADA`: a LovyanGFX gira o touch junto com o `setRotation`.
 - Sem `USB CDC On Boot` o Serial fica mudo.
 - Sem PSRAM, os sprites não cabem.
 
@@ -614,6 +615,7 @@ Registradas para não se perderem — **não** são compromisso.
 - **Serial da ponte** (`DUMP_PHONE`, `DUMP_NOVOS`): mostra cada comando que um app manda para a roda e as respostas diferentes. Mudar **uma configuração por vez** no app.
 - **nRF Connect** (Android): ver serviços/características e mandar bytes na mão.
 - **Registro HCI do Android:** Opções do desenvolvedor → "Registro de snoop HCI Bluetooth" = **Ativado** → desligar/ligar o Bluetooth → fazer as ações com pausas de 5 s, anotando a ordem → gerar o relatório de bugs **com o snoop ainda ligado** → arquivo `btsnoop_hci.log` dentro do zip.
+- **Visão geral do repositório:** [GitDiagram](https://gitdiagram.com/leandrosly/s16-companion) (diagrama interativo da estrutura do projeto) e [Gitingest](https://gitingest.com/leandrosly/s16-companion) (o repositório inteiro num texto só, bom para colar numa IA).
 - **Wireshark:** filtro `(btatt.opcode == 0x52 || btatt.opcode == 0x12) && bluetooth.dst == <MAC>` (escritas); `btatt.opcode == 0x1b` (notificações). "Apply as Column" no campo Value e exportar como CSV. **Compactar binários em .zip** antes de enviar.
 
 ---
@@ -624,4 +626,5 @@ Registradas para não se perderem — **não** são compromisso.
 - [EUCSpeedo](https://github.com/ihatechoosingusernames/EUCSpeedo) — display ESP32 para rodas.
 - [EUC World](https://euc.world) · [Mono Riders](https://app.monoriders.com.br) · [EUC Viewer](https://eucviewer.ried.no/)
 - [LCDWIKI — 2.8inch ESP32-S3 Display](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display)
+- [GitDiagram do projeto](https://gitdiagram.com/leandrosly/s16-companion) · [Gitingest do projeto](https://gitingest.com/leandrosly/s16-companion)
 - [NimBLE-Arduino](https://github.com/h2zero/NimBLE-Arduino) · [LovyanGFX](https://github.com/lovyan03/LovyanGFX)

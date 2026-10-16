@@ -1,4 +1,4 @@
-// VERSAO: v5-202610150002   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v5-202610152244   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -43,6 +43,10 @@
     mochila agora salvo na flash). Indicador das lanternas dos lados da velocidade.
   - LUZ DE FREIO: corrente < -2 A andando -> piscas vermelhos (sem pisca de curva) e
     mochila vermelha no maximo; depois volta como estava. Botao na cortina dos piscas.
+  Novidades (15/10/2026):
+  - PAREAMENTO_V2: o S16 Controle nao repareia mais ao reiniciar/dormir (privacidade
+    no host da NimBLE; ver README). Chave PAREAMENTO_V2 no topo.
+  - TELA_GIRADA (Serial): gira a tela e o touch 180 graus. Salvo.
 
   Bibliotecas: NimBLE-Arduino 2.5.1 COM O PATCH (pasta patch_nimble_2.5.1), LovyanGFX (lovyan03)
   Placa: "ESP32S3 Dev Module"
@@ -90,7 +94,7 @@ extern "C" int ble_rpa_get_num_peer_dev_records(void);
 #endif
 
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v5-202610150002";
+static const char* VERSAO = "v5-202610152244";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -125,6 +129,11 @@ static bool DREAM_AUTO = true;
 // Acordar do sono MEXENDO o braco (INT do MPU no IO14). Opcao porque, guardado na
 // mochila, ele acordaria a cada sacolejo. Nunca vale no sono por bateria no fim.
 static bool ACORDA_MEXENDO = false;
+
+// TELA GIRADA 180 graus (imagem e touch juntos). false = como sempre foi;
+// true = de cabeca pra baixo (lado largo/USB-C do outro lado). Salvo na flash;
+// muda pelo Serial: TELA_GIRADA = true / false (vale na hora).
+static bool TELA_GIRADA = false;
 
 // LUZ DE FREIO automatica: corrente negativa (regeneracao) = freando -> piscas em vermelho
 // (so sem pisca de curva) e mochila vermelha no brilho maximo; depois volta como estava.
@@ -273,6 +282,7 @@ static OpcaoBool OPCOES_BOOL[] = {
   { "DREAM_AUTO", &DREAM_AUTO, true },
   { "ACORDA_MEXENDO", &ACORDA_MEXENDO, false },
   { "FREIO_AUTO", &FREIO_AUTO, true },
+  { "TELA_GIRADA", &TELA_GIRADA, false },
 };
 static OpcaoTexto OPCOES_TEXTO[] = {
   { "NAME_FILTER", &NAME_FILTER, "KS" },
@@ -1166,6 +1176,7 @@ static void mostrarComandos() {
     "config                        mostra a configuracao salva",
     "config padrao                 volta tudo ao padrao de fabrica",
     "NOME = valor                  muda uma opcao (ex.: DUMP_OTHER = false, NAME_FILTER = KS)",
+    "TELA_GIRADA = true | false    gira a tela (e o touch) 180 graus; salvo",
     "bat                           bateria do display: tensao, %, carregando",
     "print                         salva a tela agora em /prints/print_NNN.bmp",
     "dormir                        dorme agora (deep sleep); o BOOT acorda",
@@ -3229,7 +3240,7 @@ void setup() {
   carregarConfig();
   dreamCarregar();             // estado das luzes da mochila (volta como estava ao reconectar)
   tft.init();
-  tft.setRotation(0);          // retrato, 240x320 (USB-C embaixo; mude para 2 para inverter)
+  tft.setRotation(TELA_GIRADA ? 2 : 0);   // retrato 240x320; 2 = girada 180 (TELA_GIRADA). O touch gira junto (LovyanGFX)
   tft.setBrightness(200);
   mpuSetup();                  // depois do tft.init(): a porta I2C 0 ja esta aberta
   somSetup();                  // codec ES8311 (I2C) + I2S + tarefa de som
@@ -3322,6 +3333,12 @@ void setup() {
 }
 
 void loop() {
+  {
+    // TELA_GIRADA mudou pelo Serial: gira na hora (o proximo quadro do sprite redesenha tudo)
+    static int rotAtual = -1;
+    int rot = TELA_GIRADA ? 2 : 0;
+    if (rot != rotAtual) { tft.setRotation(rot); rotAtual = rot; }
+  }
   if (doConnect) {
     doConnect = false;
     statusMsg("Conectando...", wheelAdvName.c_str());
