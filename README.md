@@ -35,7 +35,9 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 |---|---|---|
 | 1 | **Pareamento do S16 Controle (PAREAMENTO_V2)** | ✅ Funcionou em 15/10 (reinício, sono e bateria desconectada: o controle volta sozinho). Confirmar no uso do dia a dia: depois de >15 min (o celular troca o endereço "no ar"), com os apps juntos e numa volta de verdade. Se seguir firme, passa para "Funcionando". |
 | 2 | **Luz de freio** | ✅ Feita (14/10) — **testar andando**: ver se os limites (−2 A acende, −0,8 A apaga) ficam bons na prática (descida longa também regenera e acende). Ver [Luz de freio](#luz-de-freio). |
-| 3 | **Bateria do display** | 18650 de teste no lugar do powerbank. Conferir a leitura (`bat` no Serial / Ajustes) com o multímetro, com e sem USB. Depois: célula fina `404070` (~1300 mAh). O corte por bateria baixa já existe (dorme abaixo de 3,30 V). |
+| 3 | **Alcance do 433 na luva** | Na volta de 16/10 o controle e os piscas "funcionam no geral" mas falham na rua. Suspeita: antenas molinha (~20 mm) escondidas atrás do display, as 3 plaquinhas (RX, TX, MPU) emboladas. Testar antena de fio esticado (**17,3 cm** = ¼ de onda), afastar RX/TX entre si e do display, e ver se o 5 V do conector existe na bateria (o STX882 transmite mais forte em 5 V). Ver [433 na prática](#433-na-prática-antenas). |
+
+**Bateria do display** (saiu do foco): 18650 de ~3000 mAh aguentou **3,5 h de volta e voltou com ~60%** (16/10) → consumo na casa de ~300–350 mA, autonomia estimada de 8 h+. O % vem da tensão, então é aproximado. Falta: conferir a leitura com o multímetro e a célula fina definitiva.
 
 **Concluídos** (na ponte v5 MIDIA): ✅ MPU (tela pelo pulso + config na tela), ✅ som (piezo), ✅ piscas 433 MHz, ✅ mochila Dream (tela, conectar, estado salvo), ✅ cortina de Ajustes, ✅ print da tela, ✅ barra de ícones com bateria e "carregando", ✅ pico do PWM, ✅ controle da buzina como botões do display (receptor no IO3) + buzina externa pareada com o display, ✅ dormir/acordar (sozinho, botão, acorda mexendo), ✅ indicadores das lanternas na principal, ✅ luz de freio, ✅ pareamento do S16 Controle que sobrevive ao reinício (V2, em observação).
 
@@ -68,7 +70,7 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 - **Piscas / lanternas 433 MHz** (STX882 no IO21, RMT): modo base (apagado/laranja/vermelho/piscando, salvo) e piscas esq/dir na cortina de baixo; apertar o pisca de novo volta ao modo base.
 - **Controle da buzina como botões do display** (receptor SRX882S no IO3): buzina da roda, piscas esq/dir, buzina externa e desligar o alarme dela. Ver [Controle da buzina](#controle-da-buzina-sem-fio-43392-mhz).
 - **Buzina externa** pareada com a identidade do display (`00 9F 1D`): tela com as 7 funções do controle original.
-- **Mochila (Dream) como 2º cliente BLE:** conecta sozinha depois da roda (conexão bloqueante, 2,5 s, nova tentativa a cada 15 s), tela própria (liga, cores, brilho, efeito, DEMO, velocidade), estado salvo na flash e reaplicado ao reconectar.
+- **Mochila (Dream) como 2º cliente BLE:** conecta sozinha depois da roda (conexão bloqueante de até 2,5 s, **só com a roda parada** — a tentativa trava o loop, e andando isso pararia freio, buzina e 433; se não acha, tenta de novo em 15 s nas 3 primeiras vezes, depois a cada 1 min e depois a cada 5 min; o botão CONECTAR / `dream on` zera e tenta na hora), tela própria (liga, cores, brilho, efeito, DEMO, velocidade), estado salvo na flash e reaplicado ao reconectar.
 - **Luz de freio** automática pela corrente negativa: lanternas vermelhas + mochila vermelha no máximo. Ver [Luz de freio](#luz-de-freio).
 
 **Energia**
@@ -87,6 +89,7 @@ Para não misturar tudo: **no máximo 3 frentes ativas**. O resto fica na [lista
 ### Problemas conhecidos ⚠️
 
 - **Um 3º app** às vezes funciona porque o Android coloca dois apps na mesma conexão, mas pode cair em cascata. Garantido: 2 apps.
+- **Disputa entre núcleos no `maps`** (revisão de 17/10, item 6, pendente): o `onDisconnect` da roda zera os ponteiros remotos no núcleo do Bluetooth enquanto o `loop()` (`syncSubscriptions`/`processWrites`) testa e usa o mesmo ponteiro; e o `mapGatt()` limpa o `maps` enquanto callbacks do celular o percorrem. Raro (nunca visto na prática), mas pode reiniciar a placa. Conserto: mutex ou copiar o ponteiro para uma variável local antes de testar e usar. Fazer separado e com teste.
 - **Limite de 3 pareamentos** guardados (`CONFIG_BT_NIMBLE_MAX_BONDS` padrão da NimBLE). Com um celular só não faz diferença; com mais aparelhos, aumentar no `nimconfig.h`.
 - Os comandos de próxima/anterior **da roda** (`95`) pulam mais de uma música (é da roda, acontece também no app da KingSong). A v5 MIDIA resolve controlando o celular direto.
 - O app da KingSong mostra o histórico com horário deslocado (bug de fuso do app; a roda guarda a hora local certa).
@@ -240,7 +243,7 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 
 Só ícones, **sempre visíveis** — cinza escuro = desligado/inativo:
 
-roda (verde conectada / vermelha) · celular (ciano com app conectado) · ♪ (magenta com o controle de mídia ativo) · corneta (amarela quando a buzina toca) · 3 bolinhas da mochila (RGB conectada, amarelo piscando procurando) · ventoinha (laranja ligada) · ● gravação (vermelha gravando; só contorno = sem cartão) · bolinhas das telas · bateria (verde > 40%, amarela > 15%, vermelha piscando abaixo; **raio amarelo = carregando**) · hora.
+roda (verde conectada / vermelha) · celular (ciano com app conectado) · ♪ (magenta com o controle de mídia ativo) · corneta (amarela quando a buzina toca) · 3 bolinhas da mochila (RGB conectada, amarelo piscando procurando) · ventoinha (laranja ligada) · ● gravação (vermelha gravando, laranja ligada esperando a roda; só contorno = sem cartão) · bolinhas das telas · bateria (verde > 40%, amarela > 15%, vermelha piscando abaixo; **raio amarelo = carregando**) · hora.
 
 **Como o display sabe que está carregando** (a placa não tem um pino pra isso — o `CHRG` do TP4054 não vai pro ESP32): (1) USB ligado num **computador** → o USB nativo do ESP32 percebe o PC (carregador de parede/powerbank não é percebido assim); (2) **degrau de tensão**: ao ligar o carregador a placa passa a rodar pelo USB e a bateria só recebe carga, então a tensão **sobe de repente**; ao tirar, **cai de repente**. Limite em `BAT_DEGRAU` (0,06 V) — se o raio errar, é ele que se ajusta. Cada mudança vira evento no log (`bateria: carregando`).
 
@@ -282,6 +285,7 @@ Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanter
 
 - `eventos.csv`: sempre ativo. Display ligado, roda e apps conectando/desconectando (com motivo), cada toque no display, relógio acertado.
 - `viagem_AAAAMMDD_HHMMSS.csv`: velocidade, PWM, corrente e tensão, 5×/s, ligado no ícone 📄.
+- **A gravação é "lembrada"** (16/10): o 📄 liga a *intenção* de gravar (salva na flash, `GRAVAR_VIAGEM`). Com ela ligada, o display grava sempre que a roda está mandando dados: a roda desligou/sumiu por 10 s → fecha o arquivo; voltou (mesmo depois de o display dormir ou reiniciar) → abre um **arquivo novo** sozinho (espera até 5 s pelo relógio da roda, para o nome sair com data e hora). Só o 📄 desliga. Cores (ícone e bolinha da barra): **laranja** = ligada, esperando a roda; **vermelho** = gravando. Motivo: na volta de 16/10 a roda desligou numa parada longa e a gravação não voltou.
 
 ### Console Serial (115200, "Nova linha")
 
@@ -289,7 +293,7 @@ Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanter
 |---|---|
 | `config` | mostra a configuração |
 | `config padrao` | volta aos valores de fábrica |
-| `NOME = valor` | muda uma opção e salva na flash. Liga/desliga: `DUMP_HEX`, `DUMP_PHONE`, `DUMP_NOVOS`, `DUMP_OTHER`, `IGNORA_CANCELAR`, `TELA_AUTO`, `SOM_ON`, `DREAM_AUTO`, `ACORDA_MEXENDO`, `FREIO_AUTO`, `TELA_GIRADA` (ex.: `DUMP_PHONE = false`) |
+| `NOME = valor` | muda uma opção e salva na flash. Liga/desliga: `DUMP_HEX`, `DUMP_PHONE`, `DUMP_NOVOS`, `DUMP_OTHER`, `IGNORA_CANCELAR`, `TELA_AUTO`, `SOM_ON`, `DREAM_AUTO`, `ACORDA_MEXENDO`, `FREIO_AUTO`, `TELA_GIRADA`, `GRAVAR_VIAGEM` (ex.: `DUMP_PHONE = false`) |
 | `TELA_GIRADA = true` / `false` | gira a tela **e o touch** 180° (lado largo/USB-C pro outro lado, para a caixa); vale na hora e fica salvo |
 | `NAME_FILTER = KS` / `TARGET_MAC = c5:39:...` / `TARGET_MAC = -` | como achar a roda (vale ao reiniciar) |
 | `t 95 6 FF` | envia o comando `95` com o byte 6 = `FF` (experimentos) |
@@ -501,6 +505,16 @@ Curiosidade: cada cmd é um nibble repetido (A·A, C·C, 9·9, 5·5, 3·3). Obs.
 
 Por isso a buzina **não obedece mais ao controle original** (só à identidade do display): o controle virou botões do display sem o risco de vol± mexer no volume dela ou o cadeado armar o alarme andando.
 
+### 433 na prática (antenas)
+
+Na bancada tudo funciona; na rua (16/10) falhou às vezes. O que pesa, do mais para o menos importante:
+- **Comprimento da antena:** ¼ de onda em 433,92 MHz = **17,3 cm** de fio reto. A molinha de ~20 mm é uma antena "encurtada" (helicoidal): funciona, mas rende bem menos, e ainda menos se ficar perto de metal/placa.
+- **Vizinhança:** placa de circuito, tela, bateria e o próprio braço absorvem e desafinam. Antena **para fora** da caixa (ou correndo pela pulseira), longe do plano de terra do display; RX e TX afastados entre si e com as molinhas em direções diferentes.
+- **Tensão do transmissor:** o STX882 aceita até ~5 V e transmite mais forte quanto maior a tensão (o DATA em 3,3 V continua valendo). Antes de mudar: medir se o 5 V do conector UART existe **rodando na bateria** (pode só existir com USB).
+- **Termo-retrátil por cima:** efeito desprezível em 433 MHz. Não é o culpado.
+- **Software (se o hardware não bastar):** mais repetições por envio (hoje 12 nos piscas), à custa de mais tempo no ar.
+- Diagnóstico: o Serial mostra `[433 rx] controle transmitiu X ms` para cada aperto recebido; os que não aparecem não chegaram.
+
 ---
 
 ## 10. Lições aprendidas (as pegadinhas)
@@ -510,6 +524,8 @@ Por isso a buzina **não obedece mais ao controle original** (só à identidade 
 - Evite argumentos padrão em funções do sketch (mesmo motivo).
 - `min()`/`max()` exigem os dois argumentos do mesmo tipo.
 - `volatile` não combina com `min`/`max`: copie para uma variável local.
+- **Dois núcleos:** os callbacks da NimBLE rodam num núcleo e o `loop()` no outro. Para tempos, copie o valor escrito pelo callback **antes** de ler o `millis()` (senão a subtração dá a volta) — use `msSemDados()` para "há quanto tempo sem dados da roda".
+- **Conexão BLE bloqueante trava o `loop()`** inteiro (freio, buzina, touch): só fazer parado.
 
 **NimBLE 2.5.1**
 - Não dá para montar o servidor com conexão aberta (`assert ble_svc_gap_init`).
@@ -611,6 +627,8 @@ Registradas para não se perderem — **não** são compromisso.
 ---
 
 ## 13. Ferramentas e técnicas de investigação
+
+- **Revisão + compilação com o Claude Code** (17/10): aberto na pasta do repo, ele compila com o `arduino-cli` (core 3.3.12 e as opções do menu Ferramentas) e revisa o código sem alterar nada. A 1ª revisão achou a mochila travando o loop andando, a disputa entre núcleos no "tempo sem dados", a gravação dividida por queda curta do BLE e a sobra de linha no console — corrigidos na v5-202610171238.
 
 - **Serial da ponte** (`DUMP_PHONE`, `DUMP_NOVOS`): mostra cada comando que um app manda para a roda e as respostas diferentes. Mudar **uma configuração por vez** no app.
 - **nRF Connect** (Android): ver serviços/características e mandar bytes na mão.

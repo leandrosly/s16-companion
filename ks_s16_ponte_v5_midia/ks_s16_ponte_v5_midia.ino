@@ -1,4 +1,4 @@
-// VERSAO: v5-202610152253   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v5-202610171238   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -47,6 +47,16 @@
   - PAREAMENTO_V2: o S16 Controle nao repareia mais ao reiniciar/dormir (privacidade
     no host da NimBLE; ver README). Chave PAREAMENTO_V2 no topo.
   - TELA_GIRADA (Serial): gira a tela e o touch 180 graus. Salvo.
+  Novidades (16/10/2026):
+  - Gravacao da viagem LEMBRADA: o botao do log liga a intencao (salva); a roda
+    sumiu -> fecha o arquivo; voltou (ate depois de dormir) -> abre outro sozinho.
+    Icone laranja = ligada, esperando a roda; vermelho = gravando.
+  Novidades (17/10/2026) - correcoes da revisao do Claude Code:
+  - Mochila ausente nao trava mais o loop andando (so tenta parado; espera cresce).
+  - msSemDados(): fim da disputa entre nucleos no "tempo sem dados" (gravacao/freio).
+  - Gravacao so fecha apos 10 s sem dados (queda curta do BLE nao divide a viagem).
+  - Console: "433"/"som"/"dream"/"mpu" sozinhos nao repetem mais o comando anterior.
+  - Log desliga pelo toque mesmo sem cartao; parseBms checa o tamanho.
 
   Bibliotecas: NimBLE-Arduino 2.5.1 COM O PATCH (pasta patch_nimble_2.5.1), LovyanGFX (lovyan03)
   Placa: "ESP32S3 Dev Module"
@@ -94,7 +104,7 @@ extern "C" int ble_rpa_get_num_peer_dev_records(void);
 #endif
 
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v5-202610152253";
+static const char* VERSAO = "v5-202610171238";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -134,6 +144,12 @@ static bool ACORDA_MEXENDO = false;
 // true = de cabeca pra baixo (lado largo/USB-C do outro lado). Salvo na flash;
 // muda pelo Serial: TELA_GIRADA = true / false (vale na hora).
 static bool TELA_GIRADA = false;
+
+// GRAVACAO DA VIAGEM "lembrada": e a INTENCAO (botao do log). Com ela ligada o display
+// grava enquanto a roda manda dados; a roda some (desligou, dormiu) -> fecha o arquivo;
+// a roda volta (mesmo depois de dormir/reiniciar) -> abre um arquivo novo sozinho.
+// So o botao (ou GRAVAR_VIAGEM = false no Serial) desliga. Salvo na flash.
+static bool GRAVAR_VIAGEM = false;
 
 // LUZ DE FREIO automatica: corrente negativa (regeneracao) = freando -> piscas em vermelho
 // (so sem pisca de curva) e mochila vermelha no brilho maximo; depois volta como estava.
@@ -283,6 +299,7 @@ static OpcaoBool OPCOES_BOOL[] = {
   { "ACORDA_MEXENDO", &ACORDA_MEXENDO, false },
   { "FREIO_AUTO", &FREIO_AUTO, true },
   { "TELA_GIRADA", &TELA_GIRADA, false },
+  { "GRAVAR_VIAGEM", &GRAVAR_VIAGEM, false },
 };
 static OpcaoTexto OPCOES_TEXTO[] = {
   { "NAME_FILTER", &NAME_FILTER, "KS" },
@@ -450,6 +467,19 @@ struct WheelData {
   uint32_t lastUpdate = 0;
 } wd;
 
+// Ha quanto tempo (ms) nao chega dado novo da roda. USE SEMPRE ESTA FUNCAO em vez de
+// "millis() - wd.lastUpdate": o lastUpdate e escrito no callback da NimBLE, que roda
+// no OUTRO nucleo. Se o millis() for lido antes e um frame chegar no meio, a conta
+// "agora - lastUpdate" fica negativa, da a volta no uint32 e vira ~49 dias ("roda
+// sumiu" por engano: fechava a gravacao, piscava o freio...). Aqui o lastUpdate e
+// copiado ANTES do millis(), e um valor "do futuro" conta como 0.
+static uint32_t msSemDados() {
+  uint32_t t = wd.lastUpdate;          // copia primeiro
+  if (t == 0) return 0xFFFFFFFFUL;     // nunca chegou nada
+  int32_t d = (int32_t)(millis() - t);
+  return d < 0 ? 0 : (uint32_t)d;
+}
+
 // BMS: a roda manda sozinha um pacote longo por pack (F1 = pack 1, F2 = pack 2, subtipo D0)
 //   [21] numero de celulas | [22..] tensoes (mV, 2 bytes cada)
 //   depois: numero de sensores de temperatura, temperaturas (0,1 K), corrente (/100 A),
@@ -565,11 +595,45 @@ static void stopRideLog() {
   logEvent("gravacao parada: %s (%lu linhas)", rideFileName, (unsigned long)rideLines);
 }
 
+// Liga/desliga a INTENCAO de gravar (botao do log). Quem abre/fecha o arquivo e o rideLoop.
+static void setGravarViagem(bool on) {
+  GRAVAR_VIAGEM = on;
+  prefs.begin("s16cfg", false); prefs.putBool("GRAVAR_VIAGEM", on); prefs.end();
+  if (!on) stopRideLog();
+  logEvent("gravacao da viagem: %s", on ? "LIGADA (grava sempre que a roda estiver conectada)" : "desligada");
+}
+
+// Abre o arquivo quando a roda esta mandando dados e fecha quando ela some.
+//  - abre: GRAVAR_VIAGEM ligado + dados da roda chegando + relogio acertado
+//    (ou 5 s de espera, para o nome do arquivo sair com data e hora);
+//  - fecha: 10 s sem dados da roda (desligou / desconectou), sem quebrar o
+//    arquivo por uma falhinha curta.
+static void rideLoop() {
+  static uint32_t vivaDesde = 0;
+  uint32_t agora = millis();
+  uint32_t sem = msSemDados();
+  bool viva = mainRemote != nullptr && sem < 2000;
+  if (viva) { if (!vivaDesde) vivaDesde = agora; } else vivaDesde = 0;
+  // So o tempo sem dados decide (uma queda curta do Bluetooth com reconexao em
+  // poucos segundos NAO divide a viagem; o writeRideLine ja pula linhas sem dados).
+  if (rideLogging && sem > 10000) {
+    Serial.println("[log] roda sumiu: fechando a gravacao (reabre quando ela voltar)");
+    stopRideLog();
+  }
+  if (rideLogging && !GRAVAR_VIAGEM) stopRideLog();     // desligado pelo Serial (GRAVAR_VIAGEM = false)
+  static uint32_t tentou = 0;                          // se o cartao falhar, tenta de novo a cada 5 s
+  if (GRAVAR_VIAGEM && !rideLogging && sdOk && viva && (clockSet || agora - vivaDesde > 5000)
+      && (tentou == 0 || agora - tentou > 5000)) {
+    tentou = agora;
+    startRideLog();
+  }
+}
+
 static void writeRideLine() {
   static uint32_t last = 0, lastFlush = 0;
   if (!rideLogging || millis() - last < 200) return;     // 5 linhas por segundo
   last = millis();
-  if (millis() - wd.lastUpdate > 2000) return;           // sem dados novos da roda
+  if (msSemDados() > 2000) return;                       // sem dados novos da roda
   char ts[24]; clockStr(ts, sizeof(ts));
   rideFile.printf("%lu,%s,%.2f,%d,%.2f,%.2f\n", (unsigned long)millis(), ts,
                   wd.speed, wd.pwm, wd.current, wd.voltage);
@@ -609,6 +673,7 @@ static int findIdxByLocal(NimBLECharacteristic* lc) {
 
 // ================= Decodificacao (so para a tela) =================
 static void parseBms(const uint8_t* d, size_t len) {
+  if (len < 22) return;                        // precisa ao menos do byte 21 (n de celulas)
   BmsPack& b = bms[d[16] == 0xF1 ? 0 : 1];
   int n = min((int)d[21], 24);
   size_t base = 22 + 2 * n;                    // onde termina a lista de celulas
@@ -1205,6 +1270,17 @@ static void mostrarComandos() {
 //   raw AA 55 00 ... 5A 5A    -> envia exatamente esses 20 bytes (ex.: um frame capturado)
 //   esquecer                  -> apaga os pareamentos (controle de midia) guardados no display
 // As respostas "diferentes" da roda aparecem como R? (ver DUMP_NOVOS).
+// 2a palavra da linha ("dream cor 10 20 30" -> "cor"; "433" sozinho -> "").
+// Antes lia line+N direto: com o comando sozinho, passava do fim da linha e pegava
+// a SOBRA da linha anterior (ex.: "433 e" e depois "433" ligava o pisca de novo).
+static String palavra2(const String& s) {
+  int i = s.indexOf(' ');
+  if (i < 0) return "";
+  String r = s.substring(i + 1); r.trim();
+  int j = r.indexOf(' ');
+  return j < 0 ? r : r.substring(0, j);
+}
+
 static void handleSerialConsole() {
   static char line[160];
   static int n = 0;
@@ -1264,7 +1340,7 @@ static void handleSerialConsole() {
       continue;
     }
     if (nome == "dream") {             // dream on|off|liga|desliga|cor RR GG BB|ef N
-      String sub = String(line + 6); sub.trim();   // 1a palavra depois de "dream "
+      String sub = palavra2(orig);                 // 1a palavra depois de "dream "
       // (os numeros "RR GG BB" / "N" ja estao em v[1..] parseados como hexa)
       if (sub == "on")       dreamSetAuto(true);
       else if (sub == "off") dreamSetAuto(false);
@@ -1277,7 +1353,7 @@ static void handleSerialConsole() {
       continue;
     }
     if (nome == "433") {               // 433 e|d|x|l|v|p (esq, dir, desliga, laranja, verm, piscando)
-      String a = String(line + 4); a.trim();
+      String a = palavra2(orig);
       if (a == "e") piscaToggle(1);
       else if (a == "d") piscaToggle(2);
       else if (a == "x") luzSetBase(LUZ_OFF);
@@ -1289,7 +1365,7 @@ static void handleSerialConsole() {
       continue;
     }
     if (nome == "som") {               // som | som bipe | som alarme | som on | som off
-      String a = String(line + 4); a.trim();
+      String a = palavra2(orig);
       if (a == "bipe") somBipe();
       else if (a == "alarme") somAlarme();
       else if (a == "on" || a == "off") comandoConfig(String("SOM_ON ") + a);
@@ -1298,8 +1374,7 @@ static void handleSerialConsole() {
       continue;
     }
     if (nome == "mpu") {               // mpu | mpu gravar | mpu on | mpu off
-      char* arg = strtok_r(nullptr, " ", &save);   // (v[] ja consumiu o resto como hexa; reparse aqui)
-      String a = String(line + 4); a.trim();       // tudo depois de "mpu "
+      String a = palavra2(orig);                   // a palavra depois de "mpu "
       if (a == "gravar") mpuSalvarRef();
       else if (a == "on" || a == "off") { comandoConfig(String("TELA_AUTO ") + a); }
       else Serial.printf("mpu: %s | TELA_AUTO=%s | ref=%s | angulo=%.1f (acende <%.0f, apaga >%.0f) | tela=%s\n",
@@ -1472,8 +1547,9 @@ static void drawTopBar() {
   uint16_t cv = wd.cooling > 0 ? TFT_ORANGE : COL_FRAME;
   spr.fillCircle(89, 11, 2, cv);
   spr.fillCircle(89, 5, 2, cv); spr.fillCircle(84, 14, 2, cv); spr.fillCircle(94, 14, 2, cv);
-  // gravacao da viagem no SD: vermelho gravando; contorno = sem cartao
-  if (sdOk) spr.fillCircle(102, 11, 4, rideLogging ? TFT_RED : COL_FRAME);
+  // gravacao da viagem no SD: vermelho gravando; laranja = ligada, esperando a roda;
+  // contorno = sem cartao
+  if (sdOk) spr.fillCircle(102, 11, 4, rideLogging ? TFT_RED : GRAVAR_VIAGEM ? TFT_ORANGE : COL_FRAME);
   else      spr.drawCircle(102, 11, 4, COL_FRAME);
   // bolinhas das telas (na cortina de Ajustes / tela do MPU nenhuma fica marcada)
   for (int i = 0; i < NUM_PAGES; i++) {
@@ -1546,7 +1622,7 @@ static int pwmPicoMostrar() {
 }
 // Chamada a cada volta do loop (o pico conta mesmo com outra tela aberta ou a tela apagada)
 static void pwmPicoAtualizar() {
-  if (wd.pwm < 0 || millis() - wd.lastUpdate > 2000) return;
+  if (wd.pwm < 0 || msSemDados() > 2000) return;
   if (wd.pwm >= pwmPicoMostrar()) { pwmPicoV = wd.pwm; pwmPicoT = millis(); }
 }
 
@@ -1579,7 +1655,7 @@ static void drawLuzLado(int cx, int lado) {
 }
 
 static void drawData() {
-  if (millis() - wd.lastUpdate > 2000) { statusMsg("Conectado", "Sem dados..."); return; }
+  if (msSemDados() > 2000) { statusMsg("Conectado", "Sem dados..."); return; }
   char buf[24];
   spr.fillScreen(TFT_BLACK);
   drawTopBar();
@@ -1778,7 +1854,7 @@ static void drawIcone(int icInt, int cx, int cy, uint16_t c) {
   switch (ic) {
     case IC_CEL_MENOS:  icCelular(cx, cy, c); icMenos(cx, cy, c); break;
     case IC_CEL_MAIS:   icCelular(cx, cy, c); icMais(cx, cy, c); break;
-    case IC_LOG:        icArquivo(cx, cy, rideLogging ? TFT_RED : (sdOk ? c : COL_FRAME)); break;
+    case IC_LOG:        icArquivo(cx, cy, rideLogging ? TFT_RED : GRAVAR_VIAGEM ? TFT_ORANGE : (sdOk ? c : COL_FRAME)); break;
     case IC_PREV:       spr.fillRect(cx - 16, cy - 9, 3, 18, c);
                         icTriangulo(cx - 1, cy, -1, c); icTriangulo(cx + 12, cy, -1, c); break;
     case IC_NEXT:       spr.fillRect(cx + 13, cy - 9, 3, 18, c);
@@ -1822,7 +1898,7 @@ static void drawControls() {
     int x = botaoX(i), y = botaoY(i);
     bool aceso = (i == botaoAceso && millis() < botaoAcesoAte);
     spr.fillRoundRect(x, y, BT_W, BT_H, 10, aceso ? 0x6B4D : 0x2124);
-    spr.drawRoundRect(x, y, BT_W, BT_H, 10, (layout[i] == IC_LOG && rideLogging) ? TFT_RED : COL_FRAME);
+    spr.drawRoundRect(x, y, BT_W, BT_H, 10, (layout[i] == IC_LOG && GRAVAR_VIAGEM) ? (rideLogging ? TFT_RED : TFT_ORANGE) : COL_FRAME);
     drawIcone(layout[i], x + BT_W / 2, y + BT_H / 2, TFT_WHITE);
   }
   drawAlca();
@@ -1849,8 +1925,8 @@ static void tocarControles(int x, int y) {
       case IC_VOL_MAIS:  logEvent("toque: volume roda +");    sendKs(0x95, 0xFF, 0, 0, 0); break;
       case IC_LOG:
         logEvent("toque: log");
-        if (!sdOk) { Serial.println("Sem cartao SD"); break; }
-        if (rideLogging) stopRideLog(); else startRideLog();
+        if (!sdOk && !GRAVAR_VIAGEM) { Serial.println("Sem cartao SD"); break; }   // desligar vale sempre
+        setGravarViagem(!GRAVAR_VIAGEM);    // abre/fecha o arquivo no rideLoop (abre ja, se a roda estiver mandando dados)
         break;
       case IC_FAROL:
         farolModo = (farolModo + 1) % 3;          // -1 (desconhecido) vira 0 = liga
@@ -2449,7 +2525,7 @@ static void dreamSetAuto(bool on) {
   DREAM_AUTO = on; dreamQuer = on;
   prefs.begin("s16cfg", false); prefs.putBool("DREAM_AUTO", on); prefs.end();
   if (!on) { if (dreamCli && dreamCli->isConnected()) dreamCli->disconnect(); dreamConectado = false; }
-  else dreamProxTentativa = 0;
+  else { dreamProxTentativa = 0; dreamFalhas = 0; }
   Serial.printf("[dream] manter conectado: %s\n", on ? "SIM" : "NAO");
 }
 static void dreamReaplicar() {   // re-manda o modo atual (apos mexer brilho/cor/vel)
@@ -2501,6 +2577,10 @@ static void dreamLoop() {
   // A RODA VEM SEMPRE PRIMEIRO
   bool rodaOk = client && client->isConnected();
   if (!rodaOk || !dreamQuer || dreamConectado || millis() < dreamProxTentativa) return;
+  // A conexao TRAVA o loop ate 2,5 s (freio, buzina, 433, touch param). Andando, nao
+  // tenta: so com a roda parada (ou sem dados). Quem liga a mochila andando, ela
+  // conecta na proxima parada.
+  if (msSemDados() < 2000 && wd.speed > 3) return;
 
   // Conexao BLOQUEANTE (a assincrona estourava o buffer do radio - obrigado Leandro).
   // Com timeout curto, se o modulo estiver ausente a tentativa custa ~2,5 s em vez
@@ -2519,8 +2599,13 @@ static void dreamLoop() {
     if (dreamWr) { dreamConectado = true; dreamFalhas = 0; dreamAplicarPend = true; Serial.println("[dream] conectado (FFD9 ok)"); }
     else { dreamCli->disconnect(); dreamProxTentativa = millis() + 15000; }
   } else {
-    dreamProxTentativa = millis() + 15000;         // ausente: espera mais antes de tentar de novo
-    Serial.println("[dream] nao encontrado (modulo desligado/longe); nova tentativa em 15 s");
+    // ausente: espera cada vez mais (15 s nas 3 primeiras, depois 1 min, depois 5 min).
+    // O botao CONECTAR / 'dream on' zera a contagem e tenta na hora.
+    dreamFalhas++;
+    uint32_t espera = dreamFalhas <= 3 ? 15000UL : dreamFalhas <= 6 ? 60000UL : 300000UL;
+    dreamProxTentativa = millis() + espera;
+    Serial.printf("[dream] nao encontrado (modulo desligado/longe; falha %d); nova tentativa em %lu s\n",
+                  dreamFalhas, (unsigned long)(espera / 1000));
   }
 }
 
@@ -2666,7 +2751,7 @@ static void freioLoop() {
   static int calmas = 0;
   bool novo = freioAtivo;
   if (millis() < freioTesteAte) novo = true;                       // comando 'freio' (teste)
-  else if (!FREIO_AUTO || millis() - wd.lastUpdate > 2000) novo = false;   // desligado / sem dados
+  else if (!FREIO_AUTO || msSemDados() > 2000) novo = false;       // desligado / sem dados
   else if (wd.lastUpdate != ultAmostra) {                          // leitura nova da roda
     ultAmostra = wd.lastUpdate;
     bool freando = wd.current < -FREIO_LIGA_A && wd.speed > FREIO_VEL_MIN;
@@ -3249,7 +3334,7 @@ void setup() {
   spr.setPsram(true);
   spr.setColorDepth(16);
   if (!spr.createSprite(240, 320)) Serial.println("ERRO: sem memoria para o sprite (PSRAM ligada?)");
-  Serial.printf("PSRAM: %u bytes\n", ESP.getPsramSize());
+  Serial.printf("PSRAM: %lu bytes\n", (unsigned long)ESP.getPsramSize());
   statusMsg("KS-S16 ponte v5", "Escaneando...");
 
   pinMode(PIN_BUZINA, INPUT_PULLUP);
@@ -3286,12 +3371,9 @@ void setup() {
     //   setSecurityInitKey -> sm_our_key_dist    = chaves que O DISPLAY distribui
     //   setSecurityRespKey -> sm_their_key_dist  = chaves que O CELULAR distribui
     //
-    // DECISAO (ver README): voltamos a NAO pedir a identidade (IRK) do celular.
-    // Pedir a IRK conserta o re-pareamento do "S16 Controle", MAS liga a resolucao
-    // de endereco no controlador, e isso QUEBRA as conexoes na identidade da roda
-    // (os apps nao conectam / GATT vazio no nRF). Entre "controle de midia nao
-    // repareia" e "os apps funcionam", os apps ganham. O re-pareamento do controle
-    // fica como limitacao conhecida ate um conserto dedicado que nao ligue a resolucao.
+    // Historia (ver README): pedir a IRK do celular com a privacidade NO CONTROLADOR
+    // quebrava os apps na identidade da roda; o jeito antigo (0) nao pedia e o
+    // controle repareava a cada reinicio. A V2 pede a IRK e resolve NO HOST.
 #if PAREAMENTO_V2
     // V2: NAO mandamos a nossa identidade (o "S16 Controle" ja usa um endereco
     // fixo proprio, random static, que serve de identidade) e PEDIMOS a do
@@ -3367,6 +3449,7 @@ void loop() {
   processWrites();
   syncSubscriptions();
   writeEvents();
+  rideLoop();
   writeRideLine();
   handleSerialConsole();
   hidSoltar();
