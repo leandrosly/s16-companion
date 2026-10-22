@@ -196,6 +196,7 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 | `ks_s16_lcd_test/` | Primeiro teste: roda → ESP32-C3 → LCD 16×2. Histórico |
 | `galeria_fotos/` | Exemplo de aprendizado: tela + touch + sprites + zoom (+ script `converter_fotos.py`) |
 | `captura_433/` | Sketch para descobrir os códigos do controle dos piscas (ESP32-C3) |
+| `medidor_433/` | **Medidor de alcance do 433** (ESP32-C3 + SRX882S + LCD 16×2): conta quantas repetições das rajadas do `433 teste` chegam |
 | `teste_i2c_mpu/` | Teste do MPU-6050 dividindo o I2C com o touch (Plano A LovyanGFX / Plano B Wire1) |
 | `teste_tx433/` | Display imitando o controle dos piscas (STX882 no IO21, RMT) |
 | `teste_mochila/` | Display como cliente BLE do módulo Dream: liga/cor/efeito/handshake |
@@ -305,9 +306,11 @@ Antes de dormir: fecha a gravação da viagem, grava os eventos, apaga as lanter
 | `dormir` | dorme agora (deep sleep); o BOOT acorda |
 | `comandos` (ou `ajuda`, `?`) | lista todos os comandos |
 | `bat` | tensão da bateria (filtrada), %, carregando ou não, leitura crua do IO9 e se o USB é de um PC |
+| `bat cal 4.10` | **calibra** a leitura da bateria: digite a tensão medida no multímetro (sem carregador); o display calcula o fator e salva (`bat cal 1` volta ao padrão). Vale para %, alarme e corte do sono. 22/10: display mostrava 4,05 V com 4,10 V no multímetro |
 | `mpu` / `mpu on` / `mpu off` / `mpu gravar` | status do MPU (com os ângulos) / tela automática / grava a posição |
 | `som bipe` / `som alarme` / `som on` / `som off` | testa o som / liga-desliga os bipes |
 | `433 e\|d\|x\|l\|v\|p` | piscas esq/dir, luz apagada/laranja/vermelha/piscando |
+| `433 teste` | liga/desliga o **teste de alcance**: rajadas `00 9F 1E NN` a cada ~0,8 s para o `medidor_433`. Continua sem o USB e o display não dorme enquanto estiver ligado |
 | `433 raw 009F1DAA [curto longo]` | manda bits crus (até 10 dígitos hexa) no formato do controle da buzina — teste de pareamento. Tempos opcionais em µs (padrão 352 920) |
 | `dream on\|off\|liga\|desliga\|cor RR GG BB\|ef N` | mochila |
 
@@ -514,6 +517,9 @@ Na bancada tudo funciona; na rua (16/10) falhou às vezes. O que pesa, do mais p
 - **Termo-retrátil por cima:** efeito desprezível em 433 MHz. Não é o culpado.
 - **Software (se o hardware não bastar):** mais repetições por envio (hoje 12 nos piscas), à custa de mais tempo no ar.
 - Diagnóstico: o Serial mostra `[433 rx] controle transmitiu X ms` para cada aperto recebido; os que não aparecem não chegaram.
+- **Teste de 18/10:** afastar o transmissor da placa fez **muita diferença**. Ligação da molinha por um cabinho blindado (rabicho de antena Wi-Fi de notebook: vivo no ANT, malha no GND do lado do módulo) funcionou bem. Falta achar o lugar na caixa — ideia: um "cantinho da antena" sem metal numa ponta da caixa (é o que os fabricantes fazem).
+
+**Medindo o alcance (`medidor_433`, 22/10):** o SRX882S não tem pino de RSSI, então a medida é a **taxa de acerto**. No display, `433 teste` (pode tirar o USB depois); ele manda uma rajada de 12 repetições a cada ~0,8 s, com a identidade `00 9F 1E` (ninguém obedece) e um número de sequência. O C3 conta quantas das 12 chegam e mostra no LCD: `Q:` = média das últimas 10 rajadas (%), `ult` = a última rajada, `sum` = rajadas que sumiram inteiras. Uso: perto tudo dá 100%; ponha o medidor **onde fica a lanterna** (ou mais longe, até cair para uns 50–80%), **não mexa mais nele** e vá mudando só a antena do display, esperando ~10 s a cada mudança.
 
 ---
 

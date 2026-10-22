@@ -1,4 +1,4 @@
-// VERSAO: v5-202610171238   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v5-202610221412   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -51,6 +51,9 @@
   - Gravacao da viagem LEMBRADA: o botao do log liga a intencao (salva); a roda
     sumiu -> fecha o arquivo; voltou (ate depois de dormir) -> abre outro sozinho.
     Icone laranja = ligada, esperando a roda; vermelho = gravando.
+  Novidades (22/10/2026):
+  - '433 teste': rajadas numeradas (00 9F 1E NN) para o medidor_433 (C3 + LCD 16x2)
+    medir o alcance enquanto se posiciona a antena.
   Novidades (17/10/2026) - correcoes da revisao do Claude Code:
   - Mochila ausente nao trava mais o loop andando (so tenta parado; espera cresce).
   - msSemDados(): fim da disputa entre nucleos no "tempo sem dados" (gravacao/freio).
@@ -104,7 +107,7 @@ extern "C" int ble_rpa_get_num_peer_dev_records(void);
 #endif
 
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v5-202610171238";
+static const char* VERSAO = "v5-202610221412";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -196,6 +199,12 @@ static const uint16_t BUZ_CURTO = 352, BUZ_LONGO = 920, BUZ_INTERVALO = 1224;
 // Buzina EXTERNA: pareada com esta identidade do display (12/10/2026). Fila de 1 posicao
 // (o mais recente ganha), enviada quando o radio libera - igual aos piscas.
 static const uint32_t BUZ_EXT_ID = 0x009F1D;
+// TESTE DE ALCANCE ('433 teste'): rajadas continuas com uma identidade que NINGUEM
+// obedece (00 9F 1E + numero de sequencia), para o medidor_433 (C3 + LCD) contar
+// quantas repeticoes chegam. Liga/desliga pelo Serial; continua rodando sem o USB.
+static const uint32_t TESTE433_ID = 0x009F1E;
+static bool    tx433Teste = false;
+static uint8_t tx433TesteSeq = 0;
 static volatile bool    buzExtPend = false;
 static volatile uint8_t buzExtCmd = 0;
 static bool           tx433Ok = false;
@@ -265,6 +274,10 @@ static uint32_t printEm = 0;
 // Carregador TP4054 (ate 500 mA) na placa; ela NAO tem protecao de descarga.
 static const int BAT_PIN = 9;
 static float batV = 0;                    // tensao filtrada (V); 0 = ainda sem leitura
+// Calibracao (ganho) da leitura: o ADC + divisor da placa erram alguns %. Ajuste com
+// um multimetro: 'bat cal 4.10' (a tensao medida) -> calcula e salva o fator.
+// 'bat cal 1' volta ao padrao. Vale para tudo: %, alarme e o corte do sono.
+static float BAT_CAL = 1.0f;
 static int   batPct = -1;                 // 0..100; -1 = sem bateria / leitura invalida
 static bool  batAvisouBaixa = false;
 static bool  batCarregando = false;       // estimado (a placa nao tem pino de "carregando")
@@ -1181,6 +1194,8 @@ static void carregarConfig() {
   prefs.begin("s16cfg", true);                 // true = so leitura
   for (auto& o : OPCOES_BOOL)  *o.valor = prefs.getBool(o.nome, o.padrao);
   for (auto& o : OPCOES_TEXTO) *o.valor = prefs.getString(o.nome, o.padrao);
+  BAT_CAL = prefs.getFloat("BAT_CAL", 1.0f);
+  if (BAT_CAL < 0.85f || BAT_CAL > 1.15f) BAT_CAL = 1.0f;   // valor estranho: ignora
   prefs.end();
 }
 
@@ -1243,6 +1258,7 @@ static void mostrarComandos() {
     "NOME = valor                  muda uma opcao (ex.: DUMP_OTHER = false, NAME_FILTER = KS)",
     "TELA_GIRADA = true | false    gira a tela (e o touch) 180 graus; salvo",
     "bat                           bateria do display: tensao, %, carregando",
+    "bat cal 4.10                  calibra a leitura pela tensao do multimetro (bat cal 1 = padrao)",
     "print                         salva a tela agora em /prints/print_NNN.bmp",
     "dormir                        dorme agora (deep sleep); o BOOT acorda",
     "freio                         simula a luz de freio por 2,5 s (FREIO_AUTO = on/off liga a automatica)",
@@ -1251,6 +1267,7 @@ static void mostrarComandos() {
     "som bipe | som alarme         testa o som",
     "som on | som off              liga/desliga os bipes",
     "433 e | 433 d                 pisca esquerda / direita (liga; de novo volta ao modo base)",
+    "433 teste                     liga/desliga o teste de alcance (rajadas para o medidor_433)",
     "433 x | l | v | p             luz: apagada / laranja / vermelha / piscando",
     "433 raw <hexa> [curto longo]  bits crus no formato da buzina (ex.: 433 raw 009F1CAA 352 920)",
     "dream on | dream off          manter a mochila conectada (salvo)",
@@ -1311,9 +1328,22 @@ static void handleSerialConsole() {
     if (orig == "dormir") { dormir("comando dormir", true); continue; }  // testa o sono agora
     if (orig == "freio") { freioTesteAte = millis() + 2500; Serial.println("[freio] teste: 2,5 s"); continue; }
     if (orig == "bat") {
-      Serial.printf("bateria: %.2f V  %d%%  %s  (IO9 cru: %lu mV = metade)  USB do PC: %s\n", batV, batPct,
+      Serial.printf("bateria: %.2f V  %d%%  %s  (IO9 cru: %lu mV = metade; calibracao x%.4f)  USB do PC: %s\n", batV, batPct,
                     batCarregando ? "CARREGANDO" : "na bateria",
-                    (unsigned long)analogReadMilliVolts(BAT_PIN), usbPC ? "sim" : "nao");
+                    (unsigned long)analogReadMilliVolts(BAT_PIN), BAT_CAL, usbPC ? "sim" : "nao");
+      continue;
+    }
+    if (orig.startsWith("bat cal")) {           // bat cal 4.10  (tensao do multimetro) | bat cal 1 (padrao)
+      float med = orig.substring(7).toFloat();
+      float novo;
+      if (med > 0.5f && med < 1.5f) novo = 1.0f;                   // "bat cal 1" = sem calibracao
+      else if (med >= 3.0f && med <= 4.5f && batV > 2.5f) novo = BAT_CAL * med / batV;
+      else { Serial.println("use: bat cal <tensao medida no multimetro, ex. 4.10>  |  bat cal 1 (padrao). Meca SEM carregador."); continue; }
+      if (novo < 0.85f || novo > 1.15f) { Serial.printf("bat cal: fator %.3f fora de 0,85-1,15 (conferir a medida)\n", novo); continue; }
+      BAT_CAL = novo;
+      prefs.begin("s16cfg", false); prefs.putFloat("BAT_CAL", BAT_CAL); prefs.end();
+      batV = 0;                                 // recomeca o filtro (sem "degrau" falso de carregando)
+      Serial.printf("bat cal: fator x%.4f salvo\n", BAT_CAL);
       continue;
     }
 
@@ -1360,6 +1390,12 @@ static void handleSerialConsole() {
       else if (a == "l") luzSetBase(LUZ_LARANJA);
       else if (a == "v") luzSetBase(LUZ_VERMELHO);
       else if (a == "p") luzSetBase(LUZ_PISCANDO);
+      else if (a == "teste") {
+        tx433Teste = !tx433Teste;
+        Serial.printf("433 teste: %s\n", tx433Teste
+          ? "LIGADO - rajada 00 9F 1E NN a cada ~0,8 s (veja o medidor_433). '433 teste' de novo desliga"
+          : "desligado");
+      }
       else Serial.printf("433: %s  base=%s pisca=%d  (use: 433 e|d|x|l|v|p  ou  433 raw <hexa>)\n",
                          tx433Ok ? "ok" : "sem RMT", LUZ_NOME[luzBase], piscaAtivo);
       continue;
@@ -2838,6 +2874,18 @@ static void buzExtLoop() {
   tx433Raw(hx, BUZ_CURTO, BUZ_LONGO);
 }
 
+// Teste de alcance: uma rajada (12 repeticoes, ~0,5 s) a cada ~0,8 s, numerada,
+// sempre DEPOIS dos comandos de verdade (piscas e buzina externa tem prioridade).
+static void tx433TesteLoop() {
+  static uint32_t ultimo = 0;
+  if (!tx433Teste || !tx433Ok || tx433Pend || buzExtPend) return;
+  if (millis() < tx433LivreEm || millis() - ultimo < 800) return;
+  ultimo = millis();
+  char hx[12];
+  snprintf(hx, sizeof(hx), "%06lX%02X", (unsigned long)TESTE433_ID, tx433TesteSeq++);
+  tx433Raw(hx, BUZ_CURTO, BUZ_LONGO);
+}
+
 // ---- Controle da buzina como entrada do display ----
 // A buzina externa foi pareada com a identidade do DISPLAY (00 9F 1D) e nao obedece mais
 // o controle (00 9F 1C): o controle agora so fala com o display, que decide o que fazer.
@@ -3150,7 +3198,7 @@ static void batLoop() {
   if (somModo != SOM_NADA || millis() < tx433LivreEm) tRuido = millis();   // carga extra agora
   if (millis() - t < 500) return;
   t = millis();
-  float v = analogReadMilliVolts(BAT_PIN) * 2 / 1000.0f;
+  float v = analogReadMilliVolts(BAT_PIN) * 2 / 1000.0f * BAT_CAL;
   if (batV == 0) for (int i = 0; i < 8; i++) hist[i] = v;   // 1a leitura: sem degrau falso
   hist[hi] = v; hi = (hi + 1) % 8;
   batV = (batV == 0) ? v : batV + 0.2f * (v - batV);
@@ -3247,7 +3295,7 @@ static void sonoLoop() {
   uint32_t agora = millis();
   bool roda = client && client->isConnected();
   bool tomada = usbPC || batCarregando || batPct < 0;
-  if (roda || tomada || ativoEm == 0) ativoEm = agora;
+  if (roda || tomada || tx433Teste || ativoEm == 0) ativoEm = agora;   // teste 433 rodando: nao dorme
   if (mpuUltimoToque > ativoEm) ativoEm = mpuUltimoToque;     // tocou na tela
   if (agora - ativoEm >= DORMIR_SEM_RODA_MS) dormir("10 min sem roda e sem USB", true);
   if (batPct >= 0 && !batCarregando && !usbPC && batV < BAT_CORTE_V) { if (!baixaDesde) baixaDesde = agora; }
@@ -3459,6 +3507,7 @@ void loop() {
   rx433Loop();                 // controle 433 (receptor no IO3): buzina, piscas, buzina externa
   buzExtLoop();                // comando agendado da buzina externa (sai quando o radio libera)
   tx433Loop();                 // manda o comando 433 agendado assim que o radio libera
+  tx433TesteLoop();            // '433 teste': rajadas para o medidor de alcance
   dreamLoop();                 // mantem/recupera a conexao com a mochila (Dream), se pedida
   batLoop();                   // tensao da bateria do display (IO9)
   pwmPicoAtualizar();          // pico do PWM (conta mesmo com a tela apagada)
