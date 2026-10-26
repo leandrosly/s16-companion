@@ -625,6 +625,7 @@ Registradas para não se perderem — **não** são compromisso.
 - **WheelLog na v5 MIDIA:** ver no código do WheelLog (aberto) exatamente como ele compara os serviços (quantidade? lista exata? só os da marca?) e tentar contornar, para ter controle de mídia e WheelLog na mesma versão.
 
 **Hardware**
+- **Caixinha 433 no próprio mono** (ideia de 26/10): um C3 com o transmissor e o receptor 433 e **antenas de 17,3 cm** num lugar sem metal do mono, perto das lanternas traseiras e da buzina. O display manda os comandos por BLE. O jeito mais leve seria **sem conexão**: o display põe o comando no anúncio (dados de fabricante + contador) e a caixinha só escuta, sem gastar vaga de conexão. A alternativa é uma conexão normal, como a da mochila (a de 6 já provou caber). A caixinha também receberia o controle e mandaria o aperto de volta pro display. Pendências: alimentação (bateria própria? porta USB da roda?), fixação contra vibração e água, e o alcance até as lanternas do capacete.
 - GPS (módulo de drone M10, ex. HGLRC M100 Mini) na UART — também dá hora exata.
 - Placa futura com tudo embutido: Waveshare ESP32-S3-Touch-LCD-2.8 (IMU + RTC) ou LilyGO T-Watch Ultra.
 - Programar pelo tablet: code-server + arduino-cli no servidor de casa + OTA.
