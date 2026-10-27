@@ -1,4 +1,4 @@
-// VERSAO: c3-202610262023
+// VERSAO: c3-202610262124
 /*
   =====================================================================
    PONTE C3 - S16 Companion, ETAPA 2: ponte BLE + radio 433 + luz de freio
@@ -31,6 +31,10 @@
     !! Durante a transicao, DESLIGUE o TX e o RX 433 do DISPLAY (desconecte os
        modulos): senao os dois respondem ao controle e transmitem ao mesmo tempo.
 
+  CANAL COM O DISPLAY (etapa 3): o display v6 (PONTE_C3 1) conecta aqui como se
+  fosse um app, manda um "oi" e comandos (piscas, luz base, buzina externa, freio)
+  em quadros proprios na FFE1; o C3 manda o estado so para ele. Os apps nao veem.
+
   PROXIMAS ETAPAS (ver README, secao "C3 na roda"):
     3. Display v6 conecta no C3 como se fosse a roda; canal proprio dentro da
        FFE1 (quadros "AA 55 ... E0" so entre display e C3) -> sem servico extra.
@@ -46,7 +50,7 @@
 #include <vector>
 #include <Preferences.h>
 
-static const char* VERSAO = "c3-202610262023";
+static const char* VERSAO = "c3-202610262124";
 
 // ================= Configuracao (muda pelo Serial: "NOME = valor"; salva na flash) =================
 static String NAME_FILTER = "KS";
@@ -131,6 +135,22 @@ static uint32_t phoneConnT = 0;
 
 struct PendingWrite { uint8_t idx; uint16_t len; uint8_t data[244]; };
 static QueueHandle_t writeQ;
+
+// ---- Canal display <-> C3 (etapa 3) ----
+// Quadros de 20 bytes na FFE1 com a assinatura [16] EE [17..19] 'S' '1' '6'.
+//   display -> C3: AA 55 01 [cmd] [arg] ... EE 53 31 36   (o C3 executa e NAO repassa a roda)
+//   C3 -> display: AA 55 02 [luz] [pisca] [freio] [freioAuto] [teste] [botao] [seq] [radio] ... EE 53 31 36
+//                  so para a conexao do display (os apps nunca veem).
+static const uint8_t C3_MARCA[4] = { 0xEE, 0x53, 0x31, 0x36 };
+enum { C3_HELLO = 1, C3_PISCA = 2, C3_LUZBASE = 3, C3_BUZEXT = 4, C3_FREIOAUTO = 5, C3_FREIOTESTE = 6, C3_TESTE433 = 7 };
+static volatile uint16_t displayHandle = BLE_HS_CONN_HANDLE_NONE;   // conexao do display (quem mandou o "oi")
+static QueueHandle_t canalQ;                     // comandos do display (o callback so enfileira)
+struct CanalCmd { uint8_t cmd, arg; };
+static volatile bool estadoMudou = true;
+static uint8_t evBotao = 0, evSeq = 0;           // ultimo botao do controle 433 (o display mostra)
+static bool ehCanal(const uint8_t* d, size_t len) {
+  return len >= 20 && d[0] == 0xAA && d[1] == 0x55 && memcmp(d + 16, C3_MARCA, 4) == 0;
+}
 
 // ---- dados da roda (o C3 usa na etapa 2: luz de freio) ----
 struct WheelData {
@@ -218,11 +238,22 @@ static void remoteNotifyCB(NimBLERemoteCharacteristic* rc, uint8_t* data, size_t
 
 // ================= Servidor (lado apps) =================
 class LocalChrCB : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& info) override {
     int idx = findIdxByLocal(c);
     if (idx < 0) return;
     Map& m = maps[idx];
     NimBLEAttValue v = c->getValue();
+    if (m.isMain && ehCanal(v.data(), v.size())) {   // comando do display: executa aqui, nao vai pra roda
+      if (v.data()[2] == 0x01) {
+        if (displayHandle != info.getConnHandle()) {
+          displayHandle = info.getConnHandle();
+          Serial.printf("[canal] display identificado (handle %u)\n", displayHandle);
+        }
+        CanalCmd cc = { v.data()[3], v.data()[4] };
+        xQueueSend(canalQ, &cc, 0);
+      }
+      return;
+    }
     if (m.isMain) { if (DUMP_PHONE) printHex("C> ", v.data(), v.size()); }
     else if (DUMP_OTHER) { Serial.printf("C[%s]> ", m.chrUuid.toString().c_str()); printHex("", v.data(), v.size()); }
     NimBLERemoteCharacteristic* r = m.remote;     // copia local (o ponteiro pode zerar no outro lado)
@@ -260,6 +291,7 @@ class ServerCB : public NimBLEServerCallbacks {
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
     if (appConns > 0) appConns--;
+    if (info.getConnHandle() == displayHandle) { displayHandle = BLE_HS_CONN_HANDLE_NONE; Serial.println("[canal] display saiu"); }
     for (auto& m : maps) subRemove(m, info.getConnHandle());
     Serial.printf("App desconectou apos %lu ms, motivo 0x%X - restam %d\n",
                   (unsigned long)(millis() - phoneConnT), reason, appConns);
@@ -679,6 +711,7 @@ static void freioLoop() {
 static bool rx433UsaRadio(uint8_t cmd) { return cmd == 0x99 || cmd == 0xCC || cmd == 0x33 || cmd == 0x55; }
 static void rx433Acao(uint32_t cod) {
   uint8_t cmd = cod & 0xFF;
+  evBotao = cmd; evSeq++;                        // o display mostra (corneta acende etc.)
   switch (cmd) {
     case 0xAA: Serial.println("[433 rx] buzina da roda"); sendKs(0x88, 0, 0, 0, 0); break;
     case 0x99: piscaToggle(1); break;
@@ -723,6 +756,44 @@ static void radio433Setup() {
   luzBase = prefs.getInt("luz_base", LUZ_OFF);
   prefs.end();
   if (luzBase != LUZ_OFF) { tx433Enviar(LUZ_CMD[luzBase]); Serial.printf("433: luz base %s\n", LUZ_NOME[luzBase]); }
+}
+
+// ---- canal com o display: executa os comandos e manda o estado ----
+static void canalLoop() {
+  CanalCmd cc;
+  while (xQueueReceive(canalQ, &cc, 0) == pdTRUE) {
+    Serial.printf("[canal] comando %u (%u)\n", cc.cmd, cc.arg);
+    switch (cc.cmd) {
+      case C3_HELLO:      break;                                    // so pede o estado
+      case C3_PISCA:      if (cc.arg == 1 || cc.arg == 2) piscaToggle(cc.arg); break;
+      case C3_LUZBASE:    if (cc.arg < 4) luzSetBase(cc.arg); break;
+      case C3_BUZEXT:     buzExtEnviar(cc.arg); break;
+      case C3_FREIOAUTO:  FREIO_AUTO = cc.arg != 0;
+                          prefs.begin("c3cfg", false); prefs.putBool("FREIO_AUTO", FREIO_AUTO); prefs.end();
+                          break;
+      case C3_FREIOTESTE: freioTesteAte = millis() + 2500; break;
+      case C3_TESTE433:   tx433Teste = !tx433Teste; break;
+    }
+    estadoMudou = true;
+  }
+  // estado: na hora quando muda, e a cada 2 s de qualquer jeito (o display sabe que o C3 esta vivo)
+  static uint8_t ultimo[8] = {0xFF};
+  uint8_t e[8] = { (uint8_t)luzBase, (uint8_t)piscaAtivo, (uint8_t)freioAtivo, (uint8_t)FREIO_AUTO,
+                   (uint8_t)tx433Teste, evBotao, evSeq, (uint8_t)tx433Ok };
+  if (memcmp(e, ultimo, 8) != 0) estadoMudou = true;
+  static uint32_t tEnvio = 0;
+  uint16_t h = displayHandle;
+  if (h == BLE_HS_CONN_HANDLE_NONE || (!estadoMudou && millis() - tEnvio < 2000)) return;
+  NimBLECharacteristic* lc = nullptr;
+  for (auto& m : maps) if (m.isMain) lc = m.local;
+  if (!lc) return;
+  uint8_t p[20] = {0xAA, 0x55, 0x02};
+  memcpy(p + 3, e, 8);
+  memcpy(p + 16, C3_MARCA, 4);
+  lc->notify(p, sizeof(p), h);                   // so para o display
+  memcpy(ultimo, e, 8);
+  estadoMudou = false;
+  tEnvio = millis();
 }
 
 // 2a palavra da linha ("433 e" -> "e"; "433" sozinho -> "")
@@ -826,6 +897,9 @@ static void handleSerialConsole() {
       continue;
     }
     if (orig == "status") {
+      Serial.printf("MAC do C3 (para o display: TARGET_MAC = ...): %s | display: %s\n",
+                    NimBLEDevice::getAddress().toString().c_str(),
+                    displayHandle != BLE_HS_CONN_HANDLE_NONE ? "conectado" : "nao");
       Serial.printf("%s | roda: %s | apps: %d/%d | dados: %s | %.1f km/h %.2f A %.1f V pwm %d\n", VERSAO,
                     mainRemote ? "conectada" : "nao", appConns, MAX_APPS,
                     msSemDados() < 2000 ? "chegando" : "parados", wd.speed, wd.current, wd.voltage, wd.pwm);
@@ -874,7 +948,9 @@ void setup() {
   carregarConfig();
   Serial.printf("Procurando a roda: %s\n", (TARGET_MAC.length() && TARGET_MAC != "-") ? TARGET_MAC.c_str() : NAME_FILTER.c_str());
   writeQ = xQueueCreate(16, sizeof(PendingWrite));
+  canalQ = xQueueCreate(8, sizeof(CanalCmd));
   NimBLEDevice::init("");
+  Serial.printf("MAC deste C3: %s  (no display: TARGET_MAC = este MAC)\n", NimBLEDevice::getAddress().toString().c_str());
   NimBLEDevice::setMTU(247);
   server = NimBLEDevice::createServer();
   server->setCallbacks(&serverCB, false);
@@ -903,6 +979,7 @@ void loop() {
   buzExtLoop();                // comandos da buzina externa
   tx433Loop();                 // comandos das lanternas
   tx433TesteLoop();            // '433 teste'
+  canalLoop();                 // comandos do display / estado para ele
   ledLoop();
   delay(1);
 }

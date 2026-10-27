@@ -1,4 +1,4 @@
-// VERSAO: v5-202610221412   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v6-202610262152   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -51,6 +51,10 @@
   - Gravacao da viagem LEMBRADA: o botao do log liga a intencao (salva); a roda
     sumiu -> fecha o arquivo; voltou (ate depois de dormir) -> abre outro sozinho.
     Icone laranja = ligada, esperando a roda; vermelho = gravando.
+  Novidades (26/10/2026) - DISPLAY v6 (PONTE_C3):
+  - Com PONTE_C3 1 o display conecta no C3 fixo na roda: nao anuncia mais a copia
+    da roda, nao usa o radio 433; piscas/buzina externa/freio viram comandos para o
+    C3 (canal proprio na FFE1) e os indicadores mostram o estado que o C3 manda.
   Novidades (22/10/2026):
   - '433 teste': rajadas numeradas (00 9F 1E NN) para o medidor_433 (C3 + LCD 16x2)
     medir o alcance enquanto se posiciona a antena.
@@ -106,8 +110,28 @@
 extern "C" int ble_rpa_get_num_peer_dev_records(void);
 #endif
 
+// PONTE_C3 (etapa 3 do plano "C3 na roda", ver README):
+//   1 = o display conecta no C3 fixo na roda (que se apresenta igual a roda).
+//       O display NAO anuncia mais a copia da roda (os apps conectam no C3),
+//       NAO usa mais o radio 433 (o C3 faz piscas, buzina, freio e le o
+//       controle); os botoes da tela viram comandos para o C3 por um canal
+//       proprio dentro da FFE1. Continua: tela, "S16 Controle", mochila, MPU,
+//       som, logs. Use TARGET_MAC = <MAC do C3> (o C3 mostra no 'status').
+//   0 = como antes (o display e a ponte e tem o radio 433).
+#define PONTE_C3 1
+
+// Canal display <-> C3: quadros de 20 bytes na FFE1 com a assinatura
+//   [0..1] AA 55 | [2] tipo (01 comando, 02 estado) | ... | [16] EE [17..19] 'S' '1' '6'
+// A roda nunca manda isso; o C3 nao repassa para a roda nem para os apps.
+static const uint8_t C3_MARCA[4] = { 0xEE, 0x53, 0x31, 0x36 };
+enum { C3_HELLO = 1, C3_PISCA = 2, C3_LUZBASE = 3, C3_BUZEXT = 4, C3_FREIOAUTO = 5, C3_FREIOTESTE = 6, C3_TESTE433 = 7 };
+static volatile bool    c3Ok = false;          // o C3 respondeu (recebemos estado dele)
+static volatile uint32_t c3EstadoEm = 0;       // millis do ultimo estado
+static volatile uint8_t c3Luz = 0, c3Pisca = 0, c3Freio = 0, c3FreioAuto = 1, c3Teste = 0, c3Radio = 0;
+static volatile uint8_t c3EvBtn = 0, c3EvSeq = 0;
+
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v5-202610221412";
+static const char* VERSAO = "v6-202610262152";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -747,9 +771,23 @@ static void forwardToPhone(Map* m, const uint8_t* d, size_t len) {
   }
 }
 
+// Quadro do canal display <-> C3? (aqui embaixo, e nao junto das variaveis no topo:
+// uma FUNCAO antes do struct Map faz o Arduino gerar os prototipos cedo demais)
+static bool ehCanalC3(const uint8_t* d, size_t len) {
+  return len >= 20 && d[0] == 0xAA && d[1] == 0x55 && memcmp(d + 16, C3_MARCA, 4) == 0;
+}
+
 static void remoteNotifyCB(NimBLERemoteCharacteristic* rc, uint8_t* data, size_t len, bool) {
   Map* m = findByRemote(rc);
   if (!m) return;
+  if (m->isMain && ehCanalC3(data, len)) {      // estado mandado pelo C3 (canal proprio)
+    if (data[2] == 0x02) {
+      c3Luz = data[3]; c3Pisca = data[4]; c3Freio = data[5]; c3FreioAuto = data[6];
+      c3Teste = data[7]; c3EvBtn = data[8]; c3EvSeq = data[9]; c3Radio = data[10];
+      c3EstadoEm = millis(); c3Ok = true;
+    }
+    return;                                       // nunca vai para a tela/apps como dado da roda
+  }
   if (m->isMain) {
     if (DUMP_HEX) printHex("R> ", data, len);
     else if (DUMP_NOVOS && len >= 20) {
@@ -1109,7 +1147,7 @@ static void updateAdvertising() {
   advDirty = false;
   last = millis();
   NimBLEExtAdvertising* adv = NimBLEDevice::getAdvertising();
-  bool queroRoda = mainRemote && appConns < MAX_APPS;
+  bool queroRoda = !PONTE_C3 && mainRemote && appConns < MAX_APPS;   // com o C3, os apps conectam nele
   bool queroHid  = hidConnHandle == BLE_HS_CONN_HANDLE_NONE;
   // Diagnostico: mostra cada mudanca e, principalmente, quando o controlador RECUSA ligar um anuncio
   static uint32_t ultimoAvisoFalha = 0;
@@ -1185,6 +1223,16 @@ static void sendKs(uint8_t cmd, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5) 
   if (DUMP_PHONE) printHex("D> ", p, sizeof(p));   // D> = enviado pelo display
 }
 static void sendCmd(uint8_t cmd) { sendKs(cmd, 0, 0, 0, 0); }
+
+// Comando para o C3 pelo canal proprio (so faz sentido com PONTE_C3)
+static void c3Enviar(uint8_t cmd, uint8_t arg) {
+  NimBLERemoteCharacteristic* r = mainRemote;
+  if (!r) { Serial.println("[c3] sem conexao com o C3"); return; }
+  uint8_t p[20] = {0xAA, 0x55, 0x01, cmd, arg};
+  memcpy(p + 16, C3_MARCA, 4);
+  r->writeValue(p, sizeof(p), false);
+  if (DUMP_PHONE) printHex("D>C3 ", p, sizeof(p));
+}
 
 // ---------- Configuracao pelo Serial ----------
 // (funcoes ficam aqui embaixo, e nao junto das variaveis no topo, porque o Arduino cria
@@ -1326,7 +1374,10 @@ static void handleSerialConsole() {
     if (orig == "comandos" || orig == "ajuda" || orig == "help" || orig == "?") { mostrarComandos(); continue; }
     if (orig == "print") { printEm = millis() + 1; continue; }   // print da tela agora
     if (orig == "dormir") { dormir("comando dormir", true); continue; }  // testa o sono agora
-    if (orig == "freio") { freioTesteAte = millis() + 2500; Serial.println("[freio] teste: 2,5 s"); continue; }
+    if (orig == "freio") {
+      if (PONTE_C3) { c3Enviar(C3_FREIOTESTE, 0); continue; }
+      freioTesteAte = millis() + 2500; Serial.println("[freio] teste: 2,5 s"); continue;
+    }
     if (orig == "bat") {
       Serial.printf("bateria: %.2f V  %d%%  %s  (IO9 cru: %lu mV = metade; calibracao x%.4f)  USB do PC: %s\n", batV, batPct,
                     batCarregando ? "CARREGANDO" : "na bateria",
@@ -1390,6 +1441,7 @@ static void handleSerialConsole() {
       else if (a == "l") luzSetBase(LUZ_LARANJA);
       else if (a == "v") luzSetBase(LUZ_VERMELHO);
       else if (a == "p") luzSetBase(LUZ_PISCANDO);
+      else if (a == "teste" && PONTE_C3) c3Enviar(C3_TESTE433, 0);
       else if (a == "teste") {
         tx433Teste = !tx433Teste;
         Serial.printf("433 teste: %s\n", tx433Teste
@@ -1487,6 +1539,10 @@ static bool connectToWheel() {
   sendCmd(0x63);
   delay(100);
   mainRemote->writeValue(PEDE_HORA, sizeof(PEDE_HORA), false);   // resposta chega como F9
+#if PONTE_C3
+  c3Ok = false;
+  c3Enviar(C3_HELLO, 0);          // "sou o display": o C3 passa a mandar o estado para esta conexao
+#endif
   return true;
 }
 
@@ -2040,6 +2096,7 @@ static void tocarPiscas(int x, int y) {
     if (x >= PM_X[k] && x < PM_X[k] + PM_W && y >= PB_Y && y < PB_Y + PB_H) { piscaToggle(k + 1); return; }
   if (y >= PF_Y && y < PF_Y + PF_H) {             // liga/desliga a luz de freio automatica (salvo)
     comandoConfig(String("FREIO_AUTO ") + (FREIO_AUTO ? "off" : "on"));
+    if (PONTE_C3) { c3Enviar(C3_FREIOAUTO, FREIO_AUTO ? 1 : 0); return; }
     if (!FREIO_AUTO && freioAtivo) { freioAtivo = false; freioTesteAte = 0; freioAplicar(false); }
   }
 }
@@ -2214,7 +2271,8 @@ static void drawAjustes() {
   spr.drawString(b, 6, y);
   snprintf(b, sizeof(b), "Cartao SD: %s    MPU: %s", sdOk ? "ok" : "ausente", mpuOk ? "ok" : "--");
   spr.setTextColor(COL_DIM); spr.drawString(b, 6, y + 18);
-  snprintf(b, sizeof(b), "433 %s  som %s  %s", tx433Ok ? "ok" : "--", somOk ? "ok" : "--", VERSAO);
+  snprintf(b, sizeof(b), "433 %s  som %s  %s", PONTE_C3 ? (c3Ok ? (c3Radio ? "C3" : "C3?") : "C3--") : (tx433Ok ? "ok" : "--"),
+           somOk ? "ok" : "--", VERSAO);
   spr.drawString(b, 6, y + 36);
   spr.pushSprite(0, 0);
 }
@@ -2374,7 +2432,10 @@ static int      bxAceso = -1;           // botao tocado (destaque rapido)
 static uint32_t bxAcesoAte = 0;
 
 // Agenda um comando para a buzina externa (sai quando o radio 433 liberar; ver buzExtLoop)
-static void buzExtEnviar(uint8_t cmd) { buzExtCmd = cmd; buzExtPend = true; }
+static void buzExtEnviar(uint8_t cmd) {
+  if (PONTE_C3) { c3Enviar(C3_BUZEXT, cmd); return; }
+  buzExtCmd = cmd; buzExtPend = true;
+}
 
 static void bxRet(int i, int& x, int& y, int& w, int& h) {   // retangulo do botao i
   if (i == 0) { x = 6; y = BX_BUZ_Y; w = 228; h = BX_BUZ_H; return; }
@@ -2704,7 +2765,7 @@ static void tx433Montar(rmt_data_t* s, uint8_t cmd) {
 static volatile bool    tx433Pend = false;
 static volatile uint8_t tx433Cmd = 0;
 static uint32_t         tx433LivreEm = 0;      // quando o radio volta a estar livre (por tempo)
-static void tx433Enviar(uint8_t cmd) { tx433Cmd = cmd; tx433Pend = true; }   // so agenda
+static void tx433Enviar(uint8_t cmd) { if (PONTE_C3) return; tx433Cmd = cmd; tx433Pend = true; }   // so agenda (com o C3: quem transmite e ele)
 static void tx433Loop() {
   // Em vez de depender do rmtTransmitCompleted() (que pode ficar preso em
   // "ocupado" apos um envio assincrono), espacamos os envios por tempo:
@@ -2718,6 +2779,7 @@ static void tx433Loop() {
   Serial.printf("[433] 3C 24 06 %02X %02X x%d\n", cmd, cmd ^ 0x05, TX433_REPET);
 }
 static void tx433Setup() {
+  if (PONTE_C3) { Serial.println("433: no C3 (PONTE_C3) - o display nao usa o radio"); return; }
   tx433Ok = rmtInit(TX433_PIN, RMT_TX_MODE, RMT_MEM_NUM_BLOCKS_1, 1000000);   // 1 tick = 1 us
   Serial.printf("433: %s\n", tx433Ok ? "ok (IO21)" : "ERRO ao iniciar o RMT");
   if (BOTOES_PISCA) {
@@ -2746,6 +2808,7 @@ static void luzAplicarAtual() {
   tx433Enviar(freioAtivo ? CMD_LUZ_VERMELHO : LUZ_CMD[luzBase]);
 }
 static void luzSetBase(int modo) {         // escolhe o modo "parado" e ja aplica
+  if (PONTE_C3) { c3Enviar(C3_LUZBASE, modo); return; }   // o C3 aplica e devolve o estado
   luzBase = modo;
   prefs.begin("s16cfg", false); prefs.putInt("luz_base", luzBase); prefs.end();
   luzAplicarAtual();                        // (com pisca ligado, aplica ao desligar; freando, segue vermelho)
@@ -2753,6 +2816,7 @@ static void luzSetBase(int modo) {         // escolhe o modo "parado" e ja aplic
 }
 // Aperta o pisca: liga; apertando de novo, VOLTA ao modo base (nao manda "desligar").
 static void piscaToggle(int lado) {         // 1 esquerda, 2 direita
+  if (PONTE_C3) { c3Enviar(C3_PISCA, lado); return; }
   if (piscaAtivo == lado) {                 // desliga -> volta ao que estava (ou vermelho, se freando)
     piscaAtivo = 0;
     luzAplicarAtual();
@@ -2782,7 +2846,36 @@ static void freioAplicar(bool on) {
 // A roda manda a corrente ~2x por segundo (frame A9). Uma leitura abaixo de -2 A andando
 // ja acende; para apagar, 2 leituras seguidas acima de -0,8 A (ou parado) e no minimo
 // 1 s aceso. Entre os dois limites, mantem como esta (histerese: nao fica piscando).
+// Com o C3: estado e eventos que chegaram pelo canal (o callback so guardou)
+static void c3Loop() {
+  if (!PONTE_C3) return;
+  if (c3Ok && millis() - c3EstadoEm > 6000) { c3Ok = false; Serial.println("[c3] sem estado do C3 ha 6 s"); }
+  if (!c3Ok) {                                   // ainda nao respondeu: repete o "oi" a cada 3 s
+    static uint32_t tOi = 0;
+    if (mainRemote && millis() - tOi > 3000) { tOi = millis(); c3Enviar(C3_HELLO, 0); }
+    return;
+  }
+  luzBase = c3Luz < 4 ? c3Luz : 0;               // indicadores da tela = o que o C3 esta fazendo
+  piscaAtivo = c3Pisca;
+  FREIO_AUTO = c3FreioAuto != 0;
+  tx433Teste = c3Teste != 0;
+  if ((bool)c3Freio != freioAtivo) {             // freio decidido no C3; a mochila continua aqui
+    freioAtivo = c3Freio;
+    Serial.printf("[freio] %s (pelo C3)\n", freioAtivo ? "ACENDE" : "apaga");
+    freioAplicar(freioAtivo);
+  }
+  static uint8_t seqVisto = 0;
+  static bool primeiro = true;
+  if (primeiro) { seqVisto = c3EvSeq; primeiro = false; }
+  if (c3EvSeq != seqVisto) {                     // apertaram um botao do controle (no C3)
+    seqVisto = c3EvSeq;
+    if (c3EvBtn == 0xAA || c3EvBtn == 0x33) hornFlashUntil = millis() + 600;
+    logEvent("controle (pelo C3): botao %02X", c3EvBtn);
+  }
+}
+
 static void freioLoop() {
+  if (PONTE_C3) return;                          // com o C3, quem decide e ele (ver c3Loop)
   static uint32_t ultAmostra = 0, ligouEm = 0;
   static int calmas = 0;
   bool novo = freioAtivo;
@@ -3513,6 +3606,7 @@ void loop() {
   pwmPicoAtualizar();          // pico do PWM (conta mesmo com a tela apagada)
   sonoLoop();                  // 10 min sem roda e sem USB, ou bateria no fim -> dorme (BOOT acorda)
   freioLoop();                 // luz de freio: corrente negativa -> piscas e mochila em vermelho
+  c3Loop();                    // PONTE_C3: estado/eventos do C3 (piscas, freio, controle)
   printLoop();                 // print da tela agendado (botao Print / comando 'print')
 
   bool wheelOk = client && client->isConnected();
