@@ -196,6 +196,7 @@ Os endereços só valem para **o mesmo binário**. Alternativa: extensão "ESP E
 | `ks_s16_lcd_test/` | Primeiro teste: roda → ESP32-C3 → LCD 16×2. Histórico |
 | `galeria_fotos/` | Exemplo de aprendizado: tela + touch + sprites + zoom (+ script `converter_fotos.py`) |
 | `captura_433/` | Sketch para descobrir os códigos do controle dos piscas (ESP32-C3) |
+| `ponte_c3/` | **Ponte no ESP32-C3 fixo na roda** (plano "C3 na roda", etapa 1: só a ponte BLE) |
 | `medidor_433/` | **Medidor de alcance do 433** (ESP32-C3 + SRX882S + LCD 16×2): conta quantas repetições das rajadas do `433 teste` chegam |
 | `teste_i2c_mpu/` | Teste do MPU-6050 dividindo o I2C com o touch (Plano A LovyanGFX / Plano B Wire1) |
 | `teste_tx433/` | Display imitando o controle dos piscas (STX882 no IO21, RMT) |
@@ -572,6 +573,30 @@ Na bancada tudo funciona; na rua (16/10) falhou às vezes. O que pesa, do mais p
 
 ## 11. Roadmap
 
+### Plano: C3 na roda (decidido em 26/10)
+
+A ponte sai do pulso e vai para um **ESP32-C3 fixo no monociclo**, alimentado pela USB da roda (tem USB-A e USB-C, quase sem uso). Motivos: a ponte fica a centímetros da roda e liga junto com ela; **celular e display ficam independentes** (um acaba a bateria, o outro segue); freio, piscas e buzina passam a funcionar sem o display; antenas 433 de **17,3 cm** num lugar sem metal; o display fica mais leve; e o **WheelLog volta a funcionar** (a cópia do C3 é exata, sem HID/180F).
+
+```
+Roda ◄─BLE─► C3 no mono ──► apps do celular (EUC World etc.)
+             │  433 TX/RX └─► display (conecta no C3 como se fosse a roda)
+             └─ luz de freio, piscas, buzina, controle 433
+display ◄─BLE─► celular: só o "S16 Controle" (música), como hoje
+```
+
+**Canal display ↔ C3 sem serviço extra:** quadros próprios **dentro da FFE1** (ex.: `AA 55 … E0 …`, um tipo que a roda não usa): o display escreve comandos (piscas, buzina externa, luz base) e o C3 **não repassa** pra roda; o C3 manda estado (pisca ativo, freando, botão do controle) **só para a conexão do display** (o repasse já é por conexão). Assim os apps nunca veem esses quadros e a lista de serviços continua idêntica à da roda.
+
+**Etapas** (o firmware v5 do display fica intacto, com tag no git):
+1. **`ponte_c3/` — só a ponte** ✅ código pronto (26/10): copia da v5 2APPS sem tela/cartão, até 3 conexões (2 apps + display), procura a roda pelo **MAC** (para não conectar na cópia anunciada pelo display v5), LED da placa mostra o estado. **✅ Testado em 26/10: sucesso de primeira** — EUC World, Mono Riders, EUC Raw, **WheelLog** e app da KingSong abertos juntos no celular, **mais um tablet** com o EUC World, tudo funcionando (o Android junta os apps do mesmo aparelho numa conexão). LED: pisca rápido = procurando, devagar = roda conectada, aceso = roda + app.
+**Ideia: atualizar por Wi-Fi (OTA)**, para quando o C3 estiver dentro do mono: um "modo manutenção" que só liga o Wi-Fi quando pedido (ex.: comando do display pelo canal, ou rede de casa encontrada no boot), para não dividir o rádio com a ponte. Exige um esquema de partição com OTA (ex.: "Minimal SPIFFS (1.9MB APP with OTA)").
+2. **433 + luz de freio no C3:** RX SRX882S em 3,3 V direto (DATA no GPIO4), TX STX882 com DATA direto (GPIO3); o TX pode ir no **5 V** da USB (mais potência; o DATA em 3,3 V continua valendo). Sem divisor (só o MX-RM-5V precisaria). Controle 433 → C3 → piscas/buzina/roda direto.
+3. **Display v6:** conecta no C3 (o código de cliente que já existe), sem o servidor-clone; mantém o "S16 Controle"; botões da tela viram comandos pelo canal FFE1.
+4. **Mochila (depois):** provavelmente no C3, com a configuração pelo display via canal; resolver antes a conexão que trava o loop.
+
+**A medir:** se a USB da roda tem 5 V sempre que ela está ligada (algumas só com o som ativo). Ligação interna fica para depois (garantia, água, vibração).
+
+
+
 ### Agora → ver [Foco atual](#1-foco-atual)
 
 ### Próximo
@@ -625,7 +650,6 @@ Registradas para não se perderem — **não** são compromisso.
 - **WheelLog na v5 MIDIA:** ver no código do WheelLog (aberto) exatamente como ele compara os serviços (quantidade? lista exata? só os da marca?) e tentar contornar, para ter controle de mídia e WheelLog na mesma versão.
 
 **Hardware**
-- **Caixinha 433 no próprio mono** (ideia de 26/10): um C3 com o transmissor e o receptor 433 e **antenas de 17,3 cm** num lugar sem metal do mono, perto das lanternas traseiras e da buzina. O display manda os comandos por BLE. O jeito mais leve seria **sem conexão**: o display põe o comando no anúncio (dados de fabricante + contador) e a caixinha só escuta, sem gastar vaga de conexão. A alternativa é uma conexão normal, como a da mochila (a de 6 já provou caber). A caixinha também receberia o controle e mandaria o aperto de volta pro display. Pendências: alimentação (bateria própria? porta USB da roda?), fixação contra vibração e água, e o alcance até as lanternas do capacete.
 - GPS (módulo de drone M10, ex. HGLRC M100 Mini) na UART — também dá hora exata.
 - Placa futura com tudo embutido: Waveshare ESP32-S3-Touch-LCD-2.8 (IMU + RTC) ou LilyGO T-Watch Ultra.
 - Programar pelo tablet: code-server + arduino-cli no servidor de casa + OTA.
