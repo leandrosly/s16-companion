@@ -22,6 +22,8 @@
     + / -     brilho (comeca em 25%, maximo 50%)          i   inverte o sinal (BC548)
     n         CONTAGEM: pixel 0 verde, a cada 10 um vermelho (10, 20, 30...), o resto azul fraco
     k         ponto branco andando devagar; o Serial mostra o numero do pixel aceso
+    k 63      so o pixel 63 aceso, parado (para confirmar o ultimo)
+  (Serial Monitor com "Nova linha": cada comando e uma linha)
 
   ATENCAO A CORRENTE: cada pixel puxa ate ~60 mA em branco total. 76 pixels
   em branco no maximo = ~4,5 A do 5 V da roda! O brilho fica limitado a 50%
@@ -41,6 +43,7 @@ static uint8_t px[NPIX][3];                // R G B (a ordem G R B e feita na ho
 static int brilho = 64;                    // 25%
 static bool invertido = false;
 static char modo = 'a';
+static int pixelFixo = 0;                  // modo 'x' ("k N"): so este pixel aceso
 static bool rmtOk = false;
 
 // tempos em ticks de 100 ns (RMT a 10 MHz): bit 0 = 400 alto + 900 baixo; bit 1 = 900 + 400
@@ -89,12 +92,26 @@ void setup() {
 }
 
 void loop() {
+  // le uma LINHA (Serial Monitor com "Nova linha"): "a", "+", "k", "k 63"...
+  static char linha[24];
+  static int nl = 0;
   while (Serial.available()) {
-    char c = Serial.read();
+    char ch = Serial.read();
+    if (ch == '\r') continue;
+    if (ch != '\n') { if (nl < (int)sizeof(linha) - 1) linha[nl++] = ch; continue; }
+    linha[nl] = 0; nl = 0;
+    char c = linha[0];
+    int num = -1;
+    if (linha[1] == ' ' && linha[2] >= '0' && linha[2] <= '9') num = atoi(linha + 2);
     if (c == '+') { brilho = min(brilho + 16, BRILHO_MAX); Serial.printf("brilho %d%%\n", brilho * 100 / 255); }
     else if (c == '-') { brilho = max(brilho - 16, 0); Serial.printf("brilho %d%%\n", brilho * 100 / 255); }
     else if (c == 'i') { invertido = !invertido; aplicarInversao(); Serial.printf("sinal %s\n", invertido ? "INVERTIDO (BC548)" : "normal"); }
-    else if (strchr("rgbwoavsfnk", c)) { modo = c; Serial.printf("modo %c\n", c); }
+    else if (c == 'k' && num >= 0) {                        // "k 63": so o pixel 63 aceso, parado
+      if (num >= NPIX) { Serial.printf("pixel vai de 0 a %d\n", NPIX - 1); continue; }
+      pixelFixo = num; modo = 'x';
+      Serial.printf("so o pixel %d aceso\n", num);
+    }
+    else if (c && strchr("rgbwoavsfnk", c)) { modo = c; Serial.printf("modo %c\n", c); }
   }
 
   static uint32_t t0 = 0;
@@ -118,6 +135,7 @@ void loop() {
       tudo((uint8_t)(0x4E * f * 2), 0, (uint8_t)(0x8F * f * 1.7f));
       break;
     }
+    case 'x': tudo(0, 0, 0); px[pixelFixo][0] = 255; px[pixelFixo][1] = 255; px[pixelFixo][2] = 255; break;
     case 'n':                                               // contagem de pixels
       for (int i = 0; i < NPIX; i++) {
         if (i == 0)           { px[i][0] = 0;   px[i][1] = 255; px[i][2] = 0; }

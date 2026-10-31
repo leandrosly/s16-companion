@@ -1,4 +1,4 @@
-// VERSAO: c3-202610262207
+// VERSAO: c3-202610311419
 /*
   =====================================================================
    PONTE C3 - S16 Companion, ETAPA 2: ponte BLE + radio 433 + luz de freio
@@ -35,6 +35,22 @@
   fosse um app, manda um "oi" e comandos (piscas, luz base, buzina externa, freio)
   em quadros proprios na FFE1; o C3 manda o estado so para ele. Os apps nao veem.
 
+  FITAS DE LED DA RODA (etapa 4, 31/10) - o DATA de cada fita vem do C3:
+    topo (64 LEDs, "U" da frente-esq. ate a frente-dir.)  -> GPIO5
+    traseira esquerda (23, pixel 0 em cima)               -> GPIO6
+    traseira direita  (23, pixel 0 em cima)               -> GPIO7
+    anel do farol esquerdo (16)                           -> GPIO10
+    anel do farol direito  (16)                           -> GPIO20
+    (+5V e GND das fitas continuam vindo da roda; DATA desconectado da placa
+     da roda. Hoje 3,3 V direto; depois pelo 74HCT245.)
+    O C3 tem so 2 canais RMT e um e do 433: as 5 fitas REVEZAM o outro canal
+    (uma de cada vez, trocando o pino pela matriz de GPIO do chip).
+    Efeitos: apagado | cor fixa | respirando | arco-iris | AUTO (como a roda:
+    parado = respirando, andando = arco-iris). Por cima: PISCAS sequenciais
+    (laranja) e LUZ DE FREIO (vermelho atras), junto com as lanternas 433.
+    Serial: led | led modo 0-4 | led cor R G B | led brilho 0-100 | led piscas on/off
+            led freio on/off | led teste (acende o pixel 0 de cada fita, uma por vez)
+
   PROXIMAS ETAPAS (ver README, secao "C3 na roda"):
     3. Display v6 conecta no C3 como se fosse a roda; canal proprio dentro da
        FFE1 (quadros "AA 55 ... E0" so entre display e C3) -> sem servico extra.
@@ -49,8 +65,11 @@
 #include <NimBLEDevice.h>
 #include <vector>
 #include <Preferences.h>
+#include "esp_rom_gpio.h"      // GPIO matrix: um canal RMT revezando entre as 5 fitas
+#include "soc/gpio_reg.h"
+#include "soc/gpio_sig_map.h"
 
-static const char* VERSAO = "c3-202610262207";
+static const char* VERSAO = "c3-202610311419";
 
 // ================= Configuracao (muda pelo Serial: "NOME = valor"; salva na flash) =================
 static String NAME_FILTER = "KS";
@@ -142,7 +161,8 @@ static QueueHandle_t writeQ;
 //   C3 -> display: AA 55 02 [luz] [pisca] [freio] [freioAuto] [teste] [botao] [seq] [radio] [apps] ... EE 53 31 36
 //                  so para a conexao do display (os apps nunca veem).
 static const uint8_t C3_MARCA[4] = { 0xEE, 0x53, 0x31, 0x36 };
-enum { C3_HELLO = 1, C3_PISCA = 2, C3_LUZBASE = 3, C3_BUZEXT = 4, C3_FREIOAUTO = 5, C3_FREIOTESTE = 6, C3_TESTE433 = 7 };
+enum { C3_HELLO = 1, C3_PISCA = 2, C3_LUZBASE = 3, C3_BUZEXT = 4, C3_FREIOAUTO = 5, C3_FREIOTESTE = 6, C3_TESTE433 = 7,
+       C3_LED_MODO = 8, C3_LED_BRILHO = 9, C3_LED_COR = 10 };
 static volatile uint16_t displayHandle = BLE_HS_CONN_HANDLE_NONE;   // conexao do display (quem mandou o "oi")
 static QueueHandle_t canalQ;                     // comandos do display (o callback so enfileira)
 struct CanalCmd { uint8_t cmd, arg; };
@@ -758,6 +778,194 @@ static void radio433Setup() {
   if (luzBase != LUZ_OFF) { tx433Enviar(LUZ_CMD[luzBase]); Serial.printf("433: luz base %s\n", LUZ_NOME[luzBase]); }
 }
 
+// ================= FITAS DE LED DA RODA (etapa 4) =================
+// WS2812 (ordem G R B), 5 V, ~721 kHz na roda; aqui usamos os tempos padrao (800 kHz).
+enum { FITA_TOPO = 0, FITA_TRAS_E, FITA_TRAS_D, FITA_FAROL_E, FITA_FAROL_D, N_FITAS };
+static const int   FITA_PINO[N_FITAS] = { 5, 6, 7, 10, 20 };
+static const int   FITA_NPX[N_FITAS]  = { 64, 23, 23, 16, 16 };
+static const char* FITA_NOME[N_FITAS] = { "topo", "traseira esq", "traseira dir", "farol esq", "farol dir" };
+static const int   FITA_MAXPX = 64;
+enum { LED_OFF = 0, LED_FIXA = 1, LED_RESPIRA = 2, LED_ARCOIRIS = 3, LED_AUTO = 4 };
+static const char* LED_NOME[5] = { "apagado", "cor fixa", "respirando", "arco-iris", "auto (parado respira, andando arco-iris)" };
+static int     ledModo = LED_AUTO;
+static uint8_t ledCor[3] = { 0x4E, 0x00, 0x8F };     // R G B (o violeta da roda)
+static int     ledBrilho = 40;                        // % (maximo 60)
+static bool    ledPiscas = true, ledFreio = true;
+static const int LED_BRILHO_MAX = 60;
+static const int LED_MA_MAX = 2500;                   // limite de corrente estimada (mA) no 5 V da roda
+static uint8_t fitaPx[N_FITAS][FITA_MAXPX][3];        // R G B de cada pixel
+static rmt_data_t fitaSimb[FITA_MAXPX * 24];          // so uma fita por vez no fio
+static bool    fitasOk = false;
+static int     fitaSinal = -1;                        // sinal do canal RMT na matriz de GPIO
+static bool    fitaRevezar = false;                   // da para trocar o pino do canal (5 fitas)?
+static int     ledTeste = -1;                         // 'led teste': qual fita esta com o pixel 0 aceso
+
+static void fitaGuardar() {
+  prefs.begin("c3cfg", false);
+  prefs.putInt("led_modo", ledModo); prefs.putInt("led_brilho", ledBrilho);
+  prefs.putBytes("led_cor", ledCor, 3);
+  prefs.putBool("led_piscas", ledPiscas); prefs.putBool("led_freio", ledFreio);
+  prefs.end();
+}
+
+// Liga a saida do canal RMT so no pino da fita 'f'; as outras ficam em 0 (repouso).
+static void fitaRotear(int f) {
+  for (int i = 0; i < N_FITAS; i++) {
+    if (i == f) esp_rom_gpio_connect_out_signal(FITA_PINO[i], fitaSinal, false, false);
+    else { esp_rom_gpio_connect_out_signal(FITA_PINO[i], SIG_GPIO_OUT_IDX, false, false); digitalWrite(FITA_PINO[i], LOW); }
+  }
+}
+
+static void fitasSetup() {
+  for (int i = 0; i < N_FITAS; i++) { pinMode(FITA_PINO[i], OUTPUT); digitalWrite(FITA_PINO[i], LOW); }
+  // o canal e criado no pino da 1a fita (o 433 ja pegou o outro canal no radio433Setup)
+  if (!rmtInit(FITA_PINO[0], RMT_TX_MODE, RMT_MEM_NUM_BLOCKS_1, 10000000)) {   // 100 ns por tick
+    Serial.println("fitas: ERRO ao iniciar o RMT"); return;
+  }
+  fitaSinal = REG_GET_FIELD(GPIO_FUNC0_OUT_SEL_CFG_REG + FITA_PINO[0] * 4, GPIO_FUNC0_OUT_SEL);
+  fitaRevezar = (fitaSinal == RMT_SIG_OUT0_IDX || fitaSinal == RMT_SIG_OUT1_IDX);
+  fitasOk = true;
+  Serial.printf("fitas: RMT no sinal %d (%s)\n", fitaSinal, fitaRevezar ? "ok, revezando 5 pinos" : "INESPERADO - so a fita do topo");
+  prefs.begin("c3cfg", true);
+  ledModo = prefs.getInt("led_modo", LED_AUTO);
+  ledBrilho = prefs.getInt("led_brilho", 40);
+  if (prefs.getBytesLength("led_cor") == 3) prefs.getBytes("led_cor", ledCor, 3);
+  ledPiscas = prefs.getBool("led_piscas", true);
+  ledFreio = prefs.getBool("led_freio", true);
+  prefs.end();
+  if (ledModo < 0 || ledModo > 4) ledModo = LED_AUTO;
+  if (ledBrilho < 0 || ledBrilho > LED_BRILHO_MAX) ledBrilho = 40;
+}
+
+static void corRoda(uint8_t pos, uint8_t* c) {        // arco-iris 0-255 -> R G B
+  if (pos < 85)       { c[0] = 255 - pos * 3; c[1] = pos * 3; c[2] = 0; }
+  else if (pos < 170) { pos -= 85;  c[0] = 0; c[1] = 255 - pos * 3; c[2] = pos * 3; }
+  else                { pos -= 170; c[0] = pos * 3; c[1] = 0; c[2] = 255 - pos * 3; }
+}
+static void pxSet(int f, int i, uint8_t r, uint8_t g, uint8_t b) {
+  if (i < 0 || i >= FITA_NPX[f]) return;
+  fitaPx[f][i][0] = r; fitaPx[f][i][1] = g; fitaPx[f][i][2] = b;
+}
+
+// Monta o quadro de todas as fitas: efeito base + freio + piscas por cima
+static void fitasDesenhar() {
+  uint32_t t = millis();
+  int modo = ledModo;
+  if (modo == LED_AUTO) modo = (msSemDados() < 2000 && wd.speed > 3) ? LED_ARCOIRIS : LED_RESPIRA;
+  // posicao "continua" ao longo do mono, para o arco-iris passar de uma fita a outra
+  for (int f = 0; f < N_FITAS; f++)
+    for (int i = 0; i < FITA_NPX[f]; i++) {
+      uint8_t c[3] = {0, 0, 0};
+      switch (modo) {
+        case LED_FIXA: memcpy(c, ledCor, 3); break;
+        case LED_RESPIRA: {
+          float k = (1 - cosf(t * 0.0025f)) / 2;
+          for (int j = 0; j < 3; j++) c[j] = (uint8_t)(ledCor[j] * k);
+          break;
+        }
+        case LED_ARCOIRIS: corRoda((uint8_t)(i * 10 + t / 8 + f * 40), c); break;
+        default: break;
+      }
+      pxSet(f, i, c[0], c[1], c[2]);
+    }
+  // ---- luz de freio: traseiras inteiras + o trecho de tras do "U" do topo ----
+  if (ledFreio && freioAtivo) {
+    for (int i = 0; i < FITA_NPX[FITA_TRAS_E]; i++) { pxSet(FITA_TRAS_E, i, 255, 0, 0); pxSet(FITA_TRAS_D, i, 255, 0, 0); }
+    for (int i = 20; i < 44; i++) pxSet(FITA_TOPO, i, 255, 0, 0);
+  }
+  // ---- piscas: laranja "escorrendo" de cima para baixo na traseira do lado,
+  //      a metade do topo daquele lado correndo para tras, e o anel do farol piscando ----
+  if (ledPiscas && piscaAtivo) {
+    bool esq = piscaAtivo == 1;
+    uint32_t fase = t % 700;                       // ciclo de 0,7 s: 0,5 s enchendo + 0,2 s apagado
+    bool aceso = fase < 500;
+    int f = esq ? FITA_TRAS_E : FITA_TRAS_D;
+    int n = aceso ? (int)(fase * (FITA_NPX[f] + 1) / 500) : 0;
+    for (int i = 0; i < FITA_NPX[f]; i++) { if (i < n) pxSet(f, i, 255, 90, 0); else pxSet(f, i, 0, 0, 0); }
+    // topo: lado esquerdo = pixels 0..31 (frente -> tras); lado direito = 63..32 (frente -> tras)
+    int nt = aceso ? (int)(fase * 33 / 500) : 0;
+    for (int k = 0; k < 32; k++) {
+      int i = esq ? k : 63 - k;
+      if (k < nt) pxSet(FITA_TOPO, i, 255, 90, 0); else pxSet(FITA_TOPO, i, 0, 0, 0);
+    }
+    int fr = esq ? FITA_FAROL_E : FITA_FAROL_D;
+    for (int i = 0; i < FITA_NPX[fr]; i++) { if (aceso) pxSet(fr, i, 255, 90, 0); else pxSet(fr, i, 0, 0, 0); }
+  }
+  // ---- 'led teste': so o pixel 0 da fita em teste, em branco ----
+  if (ledTeste >= 0) {
+    for (int f = 0; f < N_FITAS; f++) for (int i = 0; i < FITA_NPX[f]; i++) pxSet(f, i, 0, 0, 0);
+    pxSet(ledTeste, 0, 255, 255, 255);
+  }
+}
+
+// Manda uma fita por vez, sem travar o loop: escreve (assincrono) e so troca de
+// pino depois do tempo do quadro + o reset (o mesmo truque de tempo do 433).
+static void fitasLoop() {
+  static uint32_t livreEmUs = 0, ultQuadro = 0;
+  static int prox = -1;                 // -1 = montar quadro novo
+  static uint32_t ultTesteTroca = 0;
+  if (!fitasOk) return;
+  uint32_t agoraUs = micros();
+  if ((int32_t)(agoraUs - livreEmUs) < 0) return;
+  if (prox < 0) {
+    if (millis() - ultQuadro < 25) return;          // ~40 quadros/s
+    ultQuadro = millis();
+    if (ledTeste >= 0 && millis() - ultTesteTroca > 1500) { ultTesteTroca = millis(); ledTeste = (ledTeste + 1) % N_FITAS;
+      Serial.printf("[led teste] pixel 0 aceso: %s (GPIO%d)\n", FITA_NOME[ledTeste], FITA_PINO[ledTeste]); }
+    fitasDesenhar();
+    prox = 0;
+  }
+  int f = prox;
+  if (!fitaRevezar && f != 0) { prox = -1; return; }   // sem revezar: so a fita do topo (pino original)
+  // brilho geral + limite de corrente estimada (~20 mA por cor no maximo)
+  static int escala = 255;
+  if (f == 0) {
+    uint32_t soma = 0;
+    for (int g = 0; g < N_FITAS; g++) for (int i = 0; i < FITA_NPX[g]; i++)
+      soma += fitaPx[g][i][0] + fitaPx[g][i][1] + fitaPx[g][i][2];
+    int br = ledBrilho * 255 / 100;
+    if (freioAtivo && ledFreio) br = LED_BRILHO_MAX * 255 / 100;     // freio sempre forte
+    uint32_t ma = soma * br / 255 * 20 / 255;
+    escala = (ma > (uint32_t)LED_MA_MAX) ? br * LED_MA_MAX / (int)ma : br;
+  }
+  int k = 0;
+  for (int i = 0; i < FITA_NPX[f]; i++) {
+    uint8_t c[3] = { fitaPx[f][i][1], fitaPx[f][i][0], fitaPx[f][i][2] };   // G R B
+    for (int j = 0; j < 3; j++) {
+      uint8_t v = (uint16_t)c[j] * escala / 255;
+      for (int b = 7; b >= 0; b--) {
+        bool um = (v >> b) & 1;
+        fitaSimb[k].level0 = 1; fitaSimb[k].duration0 = um ? 8 : 4;    // 800/400 ns alto
+        fitaSimb[k].level1 = 0; fitaSimb[k].duration1 = um ? 4 : 8;    // 400/800 ns baixo
+        k++;
+      }
+    }
+  }
+  if (fitaRevezar) fitaRotear(f);
+  rmtWriteAsync(FITA_PINO[0], fitaSimb, k);
+  livreEmUs = micros() + (uint32_t)k * 12 / 10 + 350;   // 1,2 us por bit + reset (>= 280 us) + folga
+  prox = (f + 1 < N_FITAS) ? f + 1 : -1;
+}
+
+static void ledComando(const String& resto) {          // "modo 3", "cor 255 0 0", "brilho 30", ...
+  String a = resto; a.trim();
+  if (a.startsWith("modo")) { int m = a.substring(4).toInt(); if (m >= 0 && m <= 4) ledModo = m; }
+  else if (a.startsWith("cor")) {
+    int r = 0, g = 0, b = 0;
+    if (sscanf(a.c_str() + 3, "%d %d %d", &r, &g, &b) == 3) { ledCor[0] = r; ledCor[1] = g; ledCor[2] = b; if (ledModo == LED_OFF) ledModo = LED_FIXA; }
+  }
+  else if (a.startsWith("brilho")) { int v = a.substring(6).toInt(); ledBrilho = constrain(v, 0, LED_BRILHO_MAX); }
+  else if (a == "off") ledModo = LED_OFF;
+  else if (a == "piscas on" || a == "piscas off") ledPiscas = a.endsWith("on");
+  else if (a == "freio on" || a == "freio off") ledFreio = a.endsWith("on");
+  else if (a == "teste") { ledTeste = ledTeste < 0 ? 0 : -1; Serial.printf("[led teste] %s\n", ledTeste < 0 ? "fim" : "pixel 0 de cada fita, uma por vez"); return; }
+  else if (a.length()) { Serial.println("use: led modo 0-4 | led cor R G B | led brilho 0-60 | led off | led piscas on/off | led freio on/off | led teste"); return; }
+  if (a.length()) fitaGuardar();
+  Serial.printf("[led] modo %d (%s) | cor %d %d %d | brilho %d%% | piscas %s | freio %s | %s\n", ledModo, LED_NOME[ledModo],
+                ledCor[0], ledCor[1], ledCor[2], ledBrilho, ledPiscas ? "on" : "off", ledFreio ? "on" : "off",
+                fitasOk ? "ok" : "sem RMT");
+}
+
 // ---- canal com o display: executa os comandos e manda o estado ----
 static void canalLoop() {
   CanalCmd cc;
@@ -773,6 +981,13 @@ static void canalLoop() {
                           break;
       case C3_FREIOTESTE: freioTesteAte = millis() + 2500; break;
       case C3_TESTE433:   tx433Teste = !tx433Teste; break;
+      case C3_LED_MODO:   if (cc.arg <= 4) { ledModo = cc.arg; fitaGuardar(); } break;
+      case C3_LED_BRILHO: ledBrilho = min((int)cc.arg, LED_BRILHO_MAX); fitaGuardar(); break;
+      case C3_LED_COR: {                                  // paleta: 0 vermelho 1 laranja 2 amarelo 3 verde 4 ciano 5 azul 6 violeta 7 branco
+        static const uint8_t PAL[8][3] = { {255,0,0}, {255,90,0}, {255,200,0}, {0,255,0}, {0,255,200}, {0,0,255}, {0x4E,0,0x8F}, {200,200,200} };
+        if (cc.arg < 8) { memcpy(ledCor, PAL[cc.arg], 3); if (ledModo == LED_OFF) ledModo = LED_FIXA; fitaGuardar(); }
+        break;
+      }
     }
     estadoMudou = true;
   }
@@ -891,6 +1106,7 @@ static void handleSerialConsole() {
                          tx433Ok ? "ok" : "sem RMT", LUZ_NOME[luzBase], piscaAtivo, freioAtivo ? "SIM" : "nao");
       continue;
     }
+    if (orig == "led" || orig.startsWith("led ")) { ledComando(orig.substring(3)); continue; }
     if (orig.startsWith("buz")) {                // buz AA (buzina externa), buz 33 (desliga alarme)...
       String a = palavra2(orig);
       if (a.length()) buzExtEnviar((uint8_t)strtoul(a.c_str(), nullptr, 16));
@@ -921,6 +1137,7 @@ static void handleSerialConsole() {
     } else {
       Serial.println("comandos: status | config | config padrao | NOME = valor (ex.: DUMP_HEX = true, FREIO_AUTO = off)");
       Serial.println("          433 e|d (piscas) | 433 x|l|v|p (luz base) | 433 teste | 433 raw <hexa> | buz <cmd> | freio");
+      Serial.println("          led | led modo 0-4 | led cor R G B | led brilho 0-60 | led off | led piscas on/off | led freio on/off | led teste");
       Serial.println("          t <cmd> <pos 2-15> <valor> (hexa, ex.: t 88 2 0 = buzina) | raw <20 bytes hexa>");
       continue;
     }
@@ -961,6 +1178,7 @@ void setup() {
   scan->setInterval(100);
   scan->setWindow(99);
   radio433Setup();
+  fitasSetup();                // depois do 433: ele fica com um canal RMT, as fitas com o outro
   startScan();
 }
 
@@ -981,6 +1199,7 @@ void loop() {
   tx433Loop();                 // comandos das lanternas
   tx433TesteLoop();            // '433 teste'
   canalLoop();                 // comandos do display / estado para ele
+  fitasLoop();                 // fitas de LED da roda (uma por vez, sem travar)
   ledLoop();
   delay(1);
 }
