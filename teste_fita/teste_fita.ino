@@ -20,6 +20,8 @@
     a         arco-iris girando (igual ao da roda)        v   violeta respirando
     s         varredura vermelha (vai e volta)            f   "freio": vermelho forte
     + / -     brilho (comeca em 25%, maximo 50%)          i   inverte o sinal (BC548)
+    n         CONTAGEM: pixel 0 verde, a cada 10 um vermelho (10, 20, 30...), o resto azul fraco
+    k         ponto branco andando devagar; o Serial mostra o numero do pixel aceso
 
   ATENCAO A CORRENTE: cada pixel puxa ate ~60 mA em branco total. 76 pixels
   em branco no maximo = ~4,5 A do 5 V da roda! O brilho fica limitado a 50%
@@ -31,7 +33,7 @@
 #include <Arduino.h>
 
 static const int PIN_FITA = 7;
-static const int NPIX = 76;
+static const int NPIX = 80;                 // a roda manda 80 (a fita do topo tem 76)
 static const int BRILHO_MAX = 128;        // 50%
 
 static rmt_data_t simb[NPIX * 24];
@@ -92,7 +94,7 @@ void loop() {
     if (c == '+') { brilho = min(brilho + 16, BRILHO_MAX); Serial.printf("brilho %d%%\n", brilho * 100 / 255); }
     else if (c == '-') { brilho = max(brilho - 16, 0); Serial.printf("brilho %d%%\n", brilho * 100 / 255); }
     else if (c == 'i') { invertido = !invertido; aplicarInversao(); Serial.printf("sinal %s\n", invertido ? "INVERTIDO (BC548)" : "normal"); }
-    else if (strchr("rgbwoavsf", c)) { modo = c; Serial.printf("modo %c\n", c); }
+    else if (strchr("rgbwoavsfnk", c)) { modo = c; Serial.printf("modo %c\n", c); }
   }
 
   static uint32_t t0 = 0;
@@ -114,6 +116,20 @@ void loop() {
     case 'v': {
       float f = (1 - cosf(t * 0.0025f)) / 2;                // 0..1 respirando
       tudo((uint8_t)(0x4E * f * 2), 0, (uint8_t)(0x8F * f * 1.7f));
+      break;
+    }
+    case 'n':                                               // contagem de pixels
+      for (int i = 0; i < NPIX; i++) {
+        if (i == 0)           { px[i][0] = 0;   px[i][1] = 255; px[i][2] = 0; }
+        else if (i % 10 == 0) { px[i][0] = 255; px[i][1] = 0;   px[i][2] = 0; }
+        else                  { px[i][0] = 0;   px[i][1] = 0;   px[i][2] = 40; }
+      }
+      break;
+    case 'k': {                                             // ponto andando (1 pixel a cada 0,7 s)
+      static int ult = -1;
+      int pos = (t / 700) % NPIX;
+      if (pos != ult) { ult = pos; Serial.printf("pixel %d\n", pos); }
+      tudo(0, 0, 0); px[pos][0] = 255; px[pos][1] = 255; px[pos][2] = 255;
       break;
     }
     case 's': {
