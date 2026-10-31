@@ -8,14 +8,18 @@
 
   LIGACAO (o DATA da fita e de 5 V - medido no osciloscopio em 30/10):
 
-     DATA da fita ──┤◄── 1N4148 ──┬── GPIO5 do C3
+     DATA da fita ──┤◄── 1N4148 ──┬── 1k ── GPIO5 do C3
                   (faixa do lado  │
-                   da fita)       └── resistor 4,7k ── 3V3 do C3
+                   da fita)       └── 4,7k ── 3V3 do C3
      GND da fita ───────────────────── GND do C3
+     (+5V da fita: NAO liga no C3)
 
-  Nivel alto: o diodo bloqueia e o resistor puxa o GPIO5 para 3,3 V.
-  Nivel baixo: o diodo conduz e puxa o GPIO5 para ~0,6 V. O C3 nunca
-  ve os 5 V, e a fita continua recebendo o sinal da roda normalmente.
+  Nivel alto: o diodo bloqueia e o 4,7k puxa o ponto para 3,3 V.
+  Nivel baixo: o diodo conduz e puxa o ponto para ~0,6 V (o C3 le "0"
+  abaixo de ~0,8 V). O C3 nunca ve os 5 V, e a fita continua recebendo
+  o sinal da roda normalmente (a carga extra e de ~0,6 mA no nivel baixo).
+  O 1k e so seguranca: se o diodo for soldado AO CONTRARIO, ele limita a
+  corrente que entraria no pino a menos de 1 mA (o pino aguenta).
   (O GPIO6 sai um "clock" interno do SPI: deixe esse pino SOLTO.)
 
   COMO FUNCIONA
