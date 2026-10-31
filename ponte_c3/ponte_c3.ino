@@ -1,4 +1,4 @@
-// VERSAO: c3-202610262124
+// VERSAO: c3-202610262207
 /*
   =====================================================================
    PONTE C3 - S16 Companion, ETAPA 2: ponte BLE + radio 433 + luz de freio
@@ -50,7 +50,7 @@
 #include <vector>
 #include <Preferences.h>
 
-static const char* VERSAO = "c3-202610262124";
+static const char* VERSAO = "c3-202610262207";
 
 // ================= Configuracao (muda pelo Serial: "NOME = valor"; salva na flash) =================
 static String NAME_FILTER = "KS";
@@ -139,7 +139,7 @@ static QueueHandle_t writeQ;
 // ---- Canal display <-> C3 (etapa 3) ----
 // Quadros de 20 bytes na FFE1 com a assinatura [16] EE [17..19] 'S' '1' '6'.
 //   display -> C3: AA 55 01 [cmd] [arg] ... EE 53 31 36   (o C3 executa e NAO repassa a roda)
-//   C3 -> display: AA 55 02 [luz] [pisca] [freio] [freioAuto] [teste] [botao] [seq] [radio] ... EE 53 31 36
+//   C3 -> display: AA 55 02 [luz] [pisca] [freio] [freioAuto] [teste] [botao] [seq] [radio] [apps] ... EE 53 31 36
 //                  so para a conexao do display (os apps nunca veem).
 static const uint8_t C3_MARCA[4] = { 0xEE, 0x53, 0x31, 0x36 };
 enum { C3_HELLO = 1, C3_PISCA = 2, C3_LUZBASE = 3, C3_BUZEXT = 4, C3_FREIOAUTO = 5, C3_FREIOTESTE = 6, C3_TESTE433 = 7 };
@@ -777,10 +777,11 @@ static void canalLoop() {
     estadoMudou = true;
   }
   // estado: na hora quando muda, e a cada 2 s de qualquer jeito (o display sabe que o C3 esta vivo)
-  static uint8_t ultimo[8] = {0xFF};
-  uint8_t e[8] = { (uint8_t)luzBase, (uint8_t)piscaAtivo, (uint8_t)freioAtivo, (uint8_t)FREIO_AUTO,
-                   (uint8_t)tx433Teste, evBotao, evSeq, (uint8_t)tx433Ok };
-  if (memcmp(e, ultimo, 8) != 0) estadoMudou = true;
+  static uint8_t ultimo[9] = {0xFF};
+  int apps = appConns - (displayHandle != BLE_HS_CONN_HANDLE_NONE ? 1 : 0);   // sem contar o display
+  uint8_t e[9] = { (uint8_t)luzBase, (uint8_t)piscaAtivo, (uint8_t)freioAtivo, (uint8_t)FREIO_AUTO,
+                   (uint8_t)tx433Teste, evBotao, evSeq, (uint8_t)tx433Ok, (uint8_t)(apps > 0 ? apps : 0) };
+  if (memcmp(e, ultimo, 9) != 0) estadoMudou = true;
   static uint32_t tEnvio = 0;
   uint16_t h = displayHandle;
   if (h == BLE_HS_CONN_HANDLE_NONE || (!estadoMudou && millis() - tEnvio < 2000)) return;
@@ -788,10 +789,10 @@ static void canalLoop() {
   for (auto& m : maps) if (m.isMain) lc = m.local;
   if (!lc) return;
   uint8_t p[20] = {0xAA, 0x55, 0x02};
-  memcpy(p + 3, e, 8);
+  memcpy(p + 3, e, 9);
   memcpy(p + 16, C3_MARCA, 4);
   lc->notify(p, sizeof(p), h);                   // so para o display
-  memcpy(ultimo, e, 8);
+  memcpy(ultimo, e, 9);
   estadoMudou = false;
   tEnvio = millis();
 }

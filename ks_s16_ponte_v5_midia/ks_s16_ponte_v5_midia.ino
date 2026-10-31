@@ -1,4 +1,4 @@
-// VERSAO: v6-202610262152   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v6-202610262207   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -129,9 +129,10 @@ static volatile bool    c3Ok = false;          // o C3 respondeu (recebemos esta
 static volatile uint32_t c3EstadoEm = 0;       // millis do ultimo estado
 static volatile uint8_t c3Luz = 0, c3Pisca = 0, c3Freio = 0, c3FreioAuto = 1, c3Teste = 0, c3Radio = 0;
 static volatile uint8_t c3EvBtn = 0, c3EvSeq = 0;
+static volatile uint8_t c3Apps = 0;            // apps conectados no C3 (sem contar o display)
 
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v6-202610262152";
+static const char* VERSAO = "v6-202610262207";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -232,6 +233,8 @@ static uint8_t tx433TesteSeq = 0;
 static volatile bool    buzExtPend = false;
 static volatile uint8_t buzExtCmd = 0;
 static bool           tx433Ok = false;
+// Radio 433 disponivel? (com o C3: o dele, que chega pelo canal)
+#define RADIO433_OK (PONTE_C3 ? (c3Ok && c3Radio) : tx433Ok)
 
 // Estado das luzes/piscas (lanterninhas de bike: capacete + traseira do mono)
 static const int PIN_PISCA_ESQ = 2, PIN_PISCA_DIR = 3;   // botoes ao GND (INPUT_PULLUP)
@@ -783,7 +786,7 @@ static void remoteNotifyCB(NimBLERemoteCharacteristic* rc, uint8_t* data, size_t
   if (m->isMain && ehCanalC3(data, len)) {      // estado mandado pelo C3 (canal proprio)
     if (data[2] == 0x02) {
       c3Luz = data[3]; c3Pisca = data[4]; c3Freio = data[5]; c3FreioAuto = data[6];
-      c3Teste = data[7]; c3EvBtn = data[8]; c3EvSeq = data[9]; c3Radio = data[10];
+      c3Teste = data[7]; c3EvBtn = data[8]; c3EvSeq = data[9]; c3Radio = data[10]; c3Apps = data[11];
       c3EstadoEm = millis(); c3Ok = true;
     }
     return;                                       // nunca vai para a tela/apps como dado da roda
@@ -1608,7 +1611,7 @@ static void drawTopBar() {
   spr.drawCircle(10, 11, 7, cr0); spr.drawCircle(10, 11, 6, cr0);
   spr.fillCircle(10, 11, 2, cr0);
   // app: celular. Ciano = um app conectado na identidade da roda
-  uint16_t ca = appConns > 0 ? TFT_CYAN : COL_FRAME;
+  uint16_t ca = (PONTE_C3 ? (c3Ok ? (int)c3Apps : 0) : (int)appConns) > 0 ? TFT_CYAN : COL_FRAME;   // com o C3: apps conectados nele
   spr.drawRoundRect(22, 3, 10, 16, 2, ca);
   spr.drawFastHLine(25, 15, 4, ca);
   // nota musical: controle de midia conectado e ativo no celular
@@ -2083,7 +2086,7 @@ static void drawPiscas() {
   }
   spr.setFont(&fonts::Font2);
   spr.setTextColor(COL_DIM);
-  spr.drawString(tx433Ok ? "arraste pra baixo: fecha" : "433 sem RMT", 120, 300);
+  spr.drawString(RADIO433_OK ? "arraste pra baixo: fecha" : (PONTE_C3 ? "sem o C3" : "433 sem RMT"), 120, 300);
   spr.pushSprite(0, 0);
 }
 
@@ -2248,7 +2251,7 @@ static void drawAjustes() {
                   SOM_ON && somOk ? TFT_WHITE : COL_DIM);
   drawBotaoAjuste(3, "Mochila  >", dreamConectado ? "conectada" : dreamQuer ? "procurando" : "desligada",
                   TFT_NAVY, dreamConectado ? TFT_GREEN : dreamQuer ? TFT_YELLOW : COL_DIM);
-  drawBotaoAjuste(4, "Buzina ext. >", tx433Ok ? "som/vol/alarme" : "sem 433", 0x7800, tx433Ok ? COL_DIM : TFT_RED);
+  drawBotaoAjuste(4, "Buzina ext. >", RADIO433_OK ? "som/vol/alarme" : "sem 433", 0x7800, RADIO433_OK ? COL_DIM : TFT_RED);
   char subPrint[16];
   if (!sdOk)        snprintf(subPrint, sizeof(subPrint), "sem cartao");
   else if (printEm) snprintf(subPrint, sizeof(subPrint), "em %lu s...",
