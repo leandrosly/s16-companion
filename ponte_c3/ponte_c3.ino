@@ -1,4 +1,4 @@
-// VERSAO: c3-202610311419
+// VERSAO: c3-202611010019
 /*
   =====================================================================
    PONTE C3 - S16 Companion, ETAPA 2: ponte BLE + radio 433 + luz de freio
@@ -69,7 +69,7 @@
 #include "soc/gpio_reg.h"
 #include "soc/gpio_sig_map.h"
 
-static const char* VERSAO = "c3-202610311419";
+static const char* VERSAO = "c3-202611010019";
 
 // ================= Configuracao (muda pelo Serial: "NOME = valor"; salva na flash) =================
 static String NAME_FILTER = "KS";
@@ -158,11 +158,12 @@ static QueueHandle_t writeQ;
 // ---- Canal display <-> C3 (etapa 3) ----
 // Quadros de 20 bytes na FFE1 com a assinatura [16] EE [17..19] 'S' '1' '6'.
 //   display -> C3: AA 55 01 [cmd] [arg] ... EE 53 31 36   (o C3 executa e NAO repassa a roda)
-//   C3 -> display: AA 55 02 [luz] [pisca] [freio] [freioAuto] [teste] [botao] [seq] [radio] [apps] ... EE 53 31 36
+//   C3 -> display: AA 55 02 [luz] [pisca] [freio] [freioAuto] [teste] [botao] [seq] [radio] [apps]
+//                  [ledModo] [ledBrilho] [ledCor] [ledFlags] EE 53 31 36
 //                  so para a conexao do display (os apps nunca veem).
 static const uint8_t C3_MARCA[4] = { 0xEE, 0x53, 0x31, 0x36 };
 enum { C3_HELLO = 1, C3_PISCA = 2, C3_LUZBASE = 3, C3_BUZEXT = 4, C3_FREIOAUTO = 5, C3_FREIOTESTE = 6, C3_TESTE433 = 7,
-       C3_LED_MODO = 8, C3_LED_BRILHO = 9, C3_LED_COR = 10 };
+       C3_LED_MODO = 8, C3_LED_BRILHO = 9, C3_LED_COR = 10, C3_LED_FLAGS = 11 };
 static volatile uint16_t displayHandle = BLE_HS_CONN_HANDLE_NONE;   // conexao do display (quem mandou o "oi")
 static QueueHandle_t canalQ;                     // comandos do display (o callback so enfileira)
 struct CanalCmd { uint8_t cmd, arg; };
@@ -791,8 +792,12 @@ static int     ledModo = LED_AUTO;
 static uint8_t ledCor[3] = { 0x4E, 0x00, 0x8F };     // R G B (o violeta da roda)
 static int     ledBrilho = 40;                        // % (maximo 60)
 static bool    ledPiscas = true, ledFreio = true;
+// paleta da tela do display: 0 vermelho 1 laranja 2 amarelo 3 verde 4 ciano 5 azul 6 violeta 7 branco
+static const uint8_t LED_PAL[8][3] = { {255,0,0}, {255,90,0}, {255,200,0}, {0,255,0}, {0,255,200}, {0,0,255}, {0x4E,0,0x8F}, {200,200,200} };
 static const int LED_BRILHO_MAX = 60;
-static const int LED_MA_MAX = 2500;                   // limite de corrente estimada (mA) no 5 V da roda
+static const int LED_MA_MAX = 2500;
+static const uint32_t FREIO_PISCA_MS = 120;           // freio nas fitas: 120 ms aceso / 120 ms apagado
+static const int FREIO_TOPO_DE = 23, FREIO_TOPO_ATE = 40;   // trecho de tras do "U" do topo                   // limite de corrente estimada (mA) no 5 V da roda
 static uint8_t fitaPx[N_FITAS][FITA_MAXPX][3];        // R G B de cada pixel
 static rmt_data_t fitaSimb[FITA_MAXPX * 24];          // so uma fita por vez no fio
 static bool    fitasOk = false;
@@ -869,9 +874,12 @@ static void fitasDesenhar() {
       pxSet(f, i, c[0], c[1], c[2]);
     }
   // ---- luz de freio: traseiras inteiras + o trecho de tras do "U" do topo ----
+  // PISCANDO (FREIO_PISCA_MS aceso / apagado) para chamar mais atencao que o vermelho parado.
   if (ledFreio && freioAtivo) {
-    for (int i = 0; i < FITA_NPX[FITA_TRAS_E]; i++) { pxSet(FITA_TRAS_E, i, 255, 0, 0); pxSet(FITA_TRAS_D, i, 255, 0, 0); }
-    for (int i = 20; i < 44; i++) pxSet(FITA_TOPO, i, 255, 0, 0);
+    bool aceso = (t / FREIO_PISCA_MS) % 2 == 0;
+    uint8_t r = aceso ? 255 : 0;
+    for (int i = 0; i < FITA_NPX[FITA_TRAS_E]; i++) { pxSet(FITA_TRAS_E, i, r, 0, 0); pxSet(FITA_TRAS_D, i, r, 0, 0); }
+    for (int i = FREIO_TOPO_DE; i <= FREIO_TOPO_ATE; i++) pxSet(FITA_TOPO, i, r, 0, 0);
   }
   // ---- piscas: laranja "escorrendo" de cima para baixo na traseira do lado,
   //      a metade do topo daquele lado correndo para tras, e o anel do farol piscando ----
@@ -983,20 +991,22 @@ static void canalLoop() {
       case C3_TESTE433:   tx433Teste = !tx433Teste; break;
       case C3_LED_MODO:   if (cc.arg <= 4) { ledModo = cc.arg; fitaGuardar(); } break;
       case C3_LED_BRILHO: ledBrilho = min((int)cc.arg, LED_BRILHO_MAX); fitaGuardar(); break;
-      case C3_LED_COR: {                                  // paleta: 0 vermelho 1 laranja 2 amarelo 3 verde 4 ciano 5 azul 6 violeta 7 branco
-        static const uint8_t PAL[8][3] = { {255,0,0}, {255,90,0}, {255,200,0}, {0,255,0}, {0,255,200}, {0,0,255}, {0x4E,0,0x8F}, {200,200,200} };
-        if (cc.arg < 8) { memcpy(ledCor, PAL[cc.arg], 3); if (ledModo == LED_OFF) ledModo = LED_FIXA; fitaGuardar(); }
+      case C3_LED_COR:                                    // indice da LED_PAL
+        if (cc.arg < 8) { memcpy(ledCor, LED_PAL[cc.arg], 3); if (ledModo == LED_OFF) ledModo = LED_FIXA; fitaGuardar(); }
         break;
-      }
+      case C3_LED_FLAGS:  ledPiscas = cc.arg & 1; ledFreio = cc.arg & 2; fitaGuardar(); break;
     }
     estadoMudou = true;
   }
   // estado: na hora quando muda, e a cada 2 s de qualquer jeito (o display sabe que o C3 esta vivo)
-  static uint8_t ultimo[9] = {0xFF};
+  static uint8_t ultimo[13] = {0xFF};
   int apps = appConns - (displayHandle != BLE_HS_CONN_HANDLE_NONE ? 1 : 0);   // sem contar o display
-  uint8_t e[9] = { (uint8_t)luzBase, (uint8_t)piscaAtivo, (uint8_t)freioAtivo, (uint8_t)FREIO_AUTO,
-                   (uint8_t)tx433Teste, evBotao, evSeq, (uint8_t)tx433Ok, (uint8_t)(apps > 0 ? apps : 0) };
-  if (memcmp(e, ultimo, 9) != 0) estadoMudou = true;
+  uint8_t corIdx = 255;                                 // 255 = cor fora da paleta (veio do Serial)
+  for (int c = 0; c < 8; c++) if (memcmp(ledCor, LED_PAL[c], 3) == 0) corIdx = c;
+  uint8_t e[13] = { (uint8_t)luzBase, (uint8_t)piscaAtivo, (uint8_t)freioAtivo, (uint8_t)FREIO_AUTO,
+                    (uint8_t)tx433Teste, evBotao, evSeq, (uint8_t)tx433Ok, (uint8_t)(apps > 0 ? apps : 0),
+                    (uint8_t)ledModo, (uint8_t)ledBrilho, corIdx, (uint8_t)((ledPiscas ? 1 : 0) | (ledFreio ? 2 : 0)) };
+  if (memcmp(e, ultimo, 13) != 0) estadoMudou = true;
   static uint32_t tEnvio = 0;
   uint16_t h = displayHandle;
   if (h == BLE_HS_CONN_HANDLE_NONE || (!estadoMudou && millis() - tEnvio < 2000)) return;
@@ -1004,10 +1014,10 @@ static void canalLoop() {
   for (auto& m : maps) if (m.isMain) lc = m.local;
   if (!lc) return;
   uint8_t p[20] = {0xAA, 0x55, 0x02};
-  memcpy(p + 3, e, 9);
+  memcpy(p + 3, e, 13);                          // bytes 3..15
   memcpy(p + 16, C3_MARCA, 4);
   lc->notify(p, sizeof(p), h);                   // so para o display
-  memcpy(ultimo, e, 9);
+  memcpy(ultimo, e, 13);
   estadoMudou = false;
   tEnvio = millis();
 }

@@ -1,4 +1,4 @@
-// VERSAO: v6-202610262207   (aparece no Serial ao ligar e na cortina de Ajustes)
+// VERSAO: v6-202611010019   (aparece no Serial ao ligar e na cortina de Ajustes)
 /*
   Ponte BLE KingSong KS-S16 <-> ESP32-S3 (ES3C28P 2.8") <-> Celular
   v5 "MIDIA": ate 2 apps + controle de midia (botoes de musica/volume direto no celular)
@@ -51,6 +51,9 @@
   - Gravacao da viagem LEMBRADA: o botao do log liga a intencao (salva); a roda
     sumiu -> fecha o arquivo; voltou (ate depois de dormir) -> abre outro sozinho.
     Icone laranja = ligada, esperando a roda; vermelho = gravando.
+  Novidades (01/11/2026):
+  - Tela "Fitas da roda" (botao na cortina dos piscas): modo, cor, brilho e
+    piscas/freio nas fitas de LED da roda, que agora sao comandadas pelo C3.
   Novidades (26/10/2026) - DISPLAY v6 (PONTE_C3):
   - Com PONTE_C3 1 o display conecta no C3 fixo na roda: nao anuncia mais a copia
     da roda, nao usa o radio 433; piscas/buzina externa/freio viram comandos para o
@@ -124,15 +127,18 @@ extern "C" int ble_rpa_get_num_peer_dev_records(void);
 //   [0..1] AA 55 | [2] tipo (01 comando, 02 estado) | ... | [16] EE [17..19] 'S' '1' '6'
 // A roda nunca manda isso; o C3 nao repassa para a roda nem para os apps.
 static const uint8_t C3_MARCA[4] = { 0xEE, 0x53, 0x31, 0x36 };
-enum { C3_HELLO = 1, C3_PISCA = 2, C3_LUZBASE = 3, C3_BUZEXT = 4, C3_FREIOAUTO = 5, C3_FREIOTESTE = 6, C3_TESTE433 = 7 };
+enum { C3_HELLO = 1, C3_PISCA = 2, C3_LUZBASE = 3, C3_BUZEXT = 4, C3_FREIOAUTO = 5, C3_FREIOTESTE = 6, C3_TESTE433 = 7,
+       C3_LED_MODO = 8, C3_LED_BRILHO = 9, C3_LED_COR = 10, C3_LED_FLAGS = 11 };
 static volatile bool    c3Ok = false;          // o C3 respondeu (recebemos estado dele)
 static volatile uint32_t c3EstadoEm = 0;       // millis do ultimo estado
 static volatile uint8_t c3Luz = 0, c3Pisca = 0, c3Freio = 0, c3FreioAuto = 1, c3Teste = 0, c3Radio = 0;
 static volatile uint8_t c3EvBtn = 0, c3EvSeq = 0;
 static volatile uint8_t c3Apps = 0;            // apps conectados no C3 (sem contar o display)
+// fitas de LED da roda (comandadas pelo C3): estado que ele manda
+static volatile uint8_t c3LedModo = 4, c3LedBrilho = 40, c3LedCor = 6, c3LedFlags = 3;   // flags: bit0 piscas, bit1 freio
 
 // Versao deste arquivo (data e hora em que foi gerado: AAAAMMDDHHMM). Mesma da 1a linha.
-static const char* VERSAO = "v6-202610262207";
+static const char* VERSAO = "v6-202611010019";
 
 // ================= Configuracao =================
 // Estes sao os valores PADRAO. Da para mudar pelo Serial sem regravar, por exemplo:
@@ -291,7 +297,8 @@ static uint32_t mpuUltimoToque = 0;
 // (int em vez de enum: o Arduino cria prototipos no topo, antes de um enum existir)
 static const int TELA_NORMAL = 0, TELA_AJUSTES = 1, TELA_MPU = 2, TELA_BUZEXT = 3,
                  TELA_DREAM = 4,    // mochila: aberta pelo botao "Mochila >" da cortina
-                 TELA_PISCAS = 5;   // piscas: cortina de BAIXO (arrastar pra cima a partir da borda)
+                 TELA_PISCAS = 5,   // piscas: cortina de BAIXO (arrastar pra cima a partir da borda)
+                 TELA_FITAS = 6;    // fitas de LED da roda (PONTE_C3): botao "Fitas da roda >" na cortina dos piscas
 static int modoTela = TELA_NORMAL;
 
 // Print da tela: hora marcada para salvar o BMP (0 = nenhum pedido)
@@ -787,6 +794,7 @@ static void remoteNotifyCB(NimBLERemoteCharacteristic* rc, uint8_t* data, size_t
     if (data[2] == 0x02) {
       c3Luz = data[3]; c3Pisca = data[4]; c3Freio = data[5]; c3FreioAuto = data[6];
       c3Teste = data[7]; c3EvBtn = data[8]; c3EvSeq = data[9]; c3Radio = data[10]; c3Apps = data[11];
+      c3LedModo = data[12]; c3LedBrilho = data[13]; c3LedCor = data[14]; c3LedFlags = data[15];
       c3EstadoEm = millis(); c3Ok = true;
     }
     return;                                       // nunca vai para a tela/apps como dado da roda
@@ -2050,6 +2058,7 @@ static const uint16_t LUZ_COR[4] = { 0x3186 /*cinza*/, 0xFD20 /*laranja*/, TFT_R
 static const int PM_X[2] = { 6, 124 }, PM_W = 110, PM_H = 46, PM_Y0 = 40, PM_DY = 52;
 static const int PB_Y = 176, PB_H = 92;
 static const int PF_Y = 144, PF_H = 26;            // botao "Luz de freio: sim/nao" (entre os modos e os piscas)
+static const int PFI_Y = 272, PFI_H = 26;          // botao "Fitas da roda >" (so com PONTE_C3)
 
 static void drawPiscas() {
   spr.fillScreen(TFT_BLACK);
@@ -2085,8 +2094,14 @@ static void drawPiscas() {
     if (on) { spr.setFont(&fonts::Font2); spr.drawString("piscando", x + PM_W / 2, PB_Y + PB_H - 16); }
   }
   spr.setFont(&fonts::Font2);
+  if (PONTE_C3) {                                  // fitas de LED da roda (no C3)
+    spr.fillRoundRect(6, PFI_Y, 228, PFI_H, 6, 0x2124);
+    spr.drawRoundRect(6, PFI_Y, 228, PFI_H, 6, TFT_MAGENTA);
+    spr.setTextColor(TFT_WHITE);
+    spr.drawString("Fitas da roda >", 120, PFI_Y + PFI_H / 2);
+  }
   spr.setTextColor(COL_DIM);
-  spr.drawString(RADIO433_OK ? "arraste pra baixo: fecha" : (PONTE_C3 ? "sem o C3" : "433 sem RMT"), 120, 300);
+  spr.drawString(RADIO433_OK ? "arraste pra baixo: fecha" : (PONTE_C3 ? "sem o C3" : "433 sem RMT"), 120, 306);
   spr.pushSprite(0, 0);
 }
 
@@ -2097,10 +2112,94 @@ static void tocarPiscas(int x, int y) {
   }
   for (int k = 0; k < 2; k++)
     if (x >= PM_X[k] && x < PM_X[k] + PM_W && y >= PB_Y && y < PB_Y + PB_H) { piscaToggle(k + 1); return; }
+  if (PONTE_C3 && y >= PFI_Y && y < PFI_Y + PFI_H) { modoTela = TELA_FITAS; Serial.println("Fitas"); return; }
   if (y >= PF_Y && y < PF_Y + PF_H) {             // liga/desliga a luz de freio automatica (salvo)
     comandoConfig(String("FREIO_AUTO ") + (FREIO_AUTO ? "off" : "on"));
     if (PONTE_C3) { c3Enviar(C3_FREIOAUTO, FREIO_AUTO ? 1 : 0); return; }
     if (!FREIO_AUTO && freioAtivo) { freioAtivo = false; freioTesteAte = 0; freioAplicar(false); }
+  }
+}
+
+// ---------- Fitas de LED da roda (comandadas pelo C3) ----------
+// Tudo aqui vira comando para o C3; a tela mostra o estado que ele devolve.
+static const char*    FT_MODO[5] = { "Apagado", "Fixa", "Respira", "Arco-iris", "Auto" };
+static const uint16_t FT_COR[8]  = { TFT_RED, 0xFAC0, 0xFE40, TFT_GREEN, 0x07F9, TFT_BLUE, 0x4811, TFT_WHITE };   // = paleta do C3
+static const int FT_M1_Y = 40, FT_M2_Y = 76, FT_M_H = 32;     // modos: 3 + 2 botoes
+static const int FT_C_Y = 116, FT_C_H = 30;                    // 8 cores
+static const int FT_B_Y = 156, FT_B_H = 32;                    // brilho - / +
+static const int FT_P_Y = 196, FT_F_Y = 230, FT_T_H = 28;      // piscas / freio nas fitas
+static const int FT_V_Y = 272, FT_V_H = 40;                    // VOLTAR
+
+static void ftModoRet(int m, int& x, int& y, int& w) {
+  if (m < 3) { w = 74; x = 6 + m * 78; y = FT_M1_Y; } else { w = 113; x = 6 + (m - 3) * 117; y = FT_M2_Y; }
+}
+static void drawFitas() {
+  spr.fillScreen(TFT_BLACK);
+  drawTopBar();
+  spr.setTextDatum(middle_center);
+  spr.setFont(&fonts::Font2);
+  spr.setTextColor(COL_DIM);
+  spr.drawString(c3Ok ? "Fitas da roda" : "Fitas da roda (sem o C3)", 120, 30);
+  for (int m = 0; m < 5; m++) {
+    int x, y, w; ftModoRet(m, x, y, w);
+    bool sel = c3LedModo == m;
+    spr.fillRoundRect(x, y, w, FT_M_H, 6, sel ? (uint16_t)TFT_MAGENTA : (uint16_t)0x2124);
+    spr.drawRoundRect(x, y, w, FT_M_H, 6, TFT_MAGENTA);
+    spr.setTextColor(sel ? TFT_BLACK : TFT_WHITE);
+    spr.drawString(FT_MODO[m], x + w / 2, y + FT_M_H / 2);
+  }
+  for (int c = 0; c < 8; c++) {
+    int x = 6 + c * 29;
+    spr.fillRoundRect(x, FT_C_Y, 26, FT_C_H, 5, FT_COR[c]);
+    if (c3LedCor == c) spr.drawRoundRect(x - 2, FT_C_Y - 2, 30, FT_C_H + 4, 6, TFT_WHITE);
+  }
+  // brilho: [ - ]  NN%  [ + ]
+  spr.fillRoundRect(6, FT_B_Y, 60, FT_B_H, 6, 0x2124);   spr.drawRoundRect(6, FT_B_Y, 60, FT_B_H, 6, COL_FRAME);
+  spr.fillRoundRect(174, FT_B_Y, 60, FT_B_H, 6, 0x2124); spr.drawRoundRect(174, FT_B_Y, 60, FT_B_H, 6, COL_FRAME);
+  spr.setFont(&fonts::FreeSansBold12pt7b);
+  spr.setTextColor(TFT_WHITE);
+  spr.drawString("-", 36, FT_B_Y + FT_B_H / 2);
+  spr.drawString("+", 204, FT_B_Y + FT_B_H / 2);
+  char b[24]; snprintf(b, sizeof(b), "%d%%", c3LedBrilho);
+  spr.drawString(b, 120, FT_B_Y + FT_B_H / 2);
+  spr.setFont(&fonts::Font2);
+  const char* tlbl[2] = { "Piscas nas fitas: ", "Freio nas fitas: " };
+  int ty[2] = { FT_P_Y, FT_F_Y };
+  for (int k = 0; k < 2; k++) {
+    bool on = c3LedFlags & (1 << k);
+    spr.fillRoundRect(6, ty[k], 228, FT_T_H, 6, on ? (uint16_t)(k ? 0x6000 : 0x7A00) : (uint16_t)0x2124);
+    spr.drawRoundRect(6, ty[k], 228, FT_T_H, 6, k ? TFT_RED : 0xFD20);
+    spr.setTextColor(TFT_WHITE);
+    snprintf(b, sizeof(b), "%s%s", tlbl[k], on ? "sim" : "nao");
+    spr.drawString(b, 120, ty[k] + FT_T_H / 2);
+  }
+  spr.fillRoundRect(6, FT_V_Y, 228, FT_V_H, 8, 0x2124);
+  spr.drawRoundRect(6, FT_V_Y, 228, FT_V_H, 8, COL_FRAME);
+  spr.setTextColor(TFT_WHITE);
+  spr.drawString("VOLTAR", 120, FT_V_Y + FT_V_H / 2);
+  spr.pushSprite(0, 0);
+}
+static void tocarFitas(int x, int y) {
+  if (y >= FT_V_Y) { modoTela = TELA_PISCAS; Serial.println("Piscas"); return; }
+  for (int m = 0; m < 5; m++) {
+    int bx, by, w; ftModoRet(m, bx, by, w);
+    if (x >= bx && x < bx + w && y >= by && y < by + FT_M_H) { c3Enviar(C3_LED_MODO, m); c3LedModo = m; return; }
+  }
+  if (y >= FT_C_Y && y < FT_C_Y + FT_C_H) {
+    int c = (x - 6) / 29;
+    if (c >= 0 && c < 8) { c3Enviar(C3_LED_COR, c); c3LedCor = c; }
+    return;
+  }
+  if (y >= FT_B_Y && y < FT_B_Y + FT_B_H) {
+    int v = c3LedBrilho;
+    if (x < 80) v -= 5; else if (x > 160) v += 5; else return;
+    v = constrain(v, 0, 60);
+    c3Enviar(C3_LED_BRILHO, v); c3LedBrilho = v;
+    return;
+  }
+  for (int k = 0; k < 2; k++) {
+    int ty = k ? FT_F_Y : FT_P_Y;
+    if (y >= ty && y < ty + FT_T_H) { uint8_t f = c3LedFlags ^ (1 << k); c3Enviar(C3_LED_FLAGS, f); c3LedFlags = f; return; }
   }
 }
 
@@ -2485,6 +2584,7 @@ static void drawPage() {
   if (modoTela == TELA_BUZEXT)  { drawBuzExt();  return; }
   if (modoTela == TELA_DREAM)   { drawDream();   return; }
   if (modoTela == TELA_PISCAS)  { drawPiscas();  return; }
+  if (modoTela == TELA_FITAS)   { drawFitas();   return; }
   if (page == 0) drawBms();
   else if (page == 2) drawControls();
   else drawData();
@@ -2543,6 +2643,7 @@ static void handleTouch() {
   if (modoTela == TELA_BUZEXT)  { if (toque) tocarBuzExt(x0, y0); return; }
   if (modoTela == TELA_DREAM)   { if (toque) tocarDream(x0, y0); return; }
   if (modoTela == TELA_PISCAS)  { if (toque) tocarPiscas(x0, y0); return; }
+  if (modoTela == TELA_FITAS)   { if (toque) tocarFitas(x0, y0); return; }
 
   if (!(client && client->isConnected())) return;   // sem roda: paginas paradas (so as cortinas)
   if (abs(dx) > 60 && abs(dx) > abs(dy)) {        // deslizou na horizontal
