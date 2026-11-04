@@ -1,0 +1,11 @@
+*.iml
+# configuracoes do Android Studio de cada maquina (casa e trabalho)
+/.idea/
+.gradle
+/local.properties
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties

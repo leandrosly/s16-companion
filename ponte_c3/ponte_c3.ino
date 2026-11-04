@@ -1,4 +1,4 @@
-// VERSAO: c3-202611010019
+// VERSAO: c3-202611041139
 /*
   =====================================================================
    PONTE C3 - S16 Companion, ETAPA 2: ponte BLE + radio 433 + luz de freio
@@ -69,7 +69,7 @@
 #include "soc/gpio_reg.h"
 #include "soc/gpio_sig_map.h"
 
-static const char* VERSAO = "c3-202611010019";
+static const char* VERSAO = "c3-202611041139";
 
 // ================= Configuracao (muda pelo Serial: "NOME = valor"; salva na flash) =================
 static String NAME_FILTER = "KS";
@@ -160,11 +160,31 @@ static QueueHandle_t writeQ;
 //   display -> C3: AA 55 01 [cmd] [arg] ... EE 53 31 36   (o C3 executa e NAO repassa a roda)
 //   C3 -> display: AA 55 02 [luz] [pisca] [freio] [freioAuto] [teste] [botao] [seq] [radio] [apps]
 //                  [ledModo] [ledBrilho] [ledCor] [ledFlags] EE 53 31 36
-//                  so para a conexao do display (os apps nunca veem).
+//                  para cada conexao que entrou no canal (display e o app Android).
+//   HELLO arg 0 = "sou o display" (marca o displayHandle); arg 1 = "sou o app" (so recebe o estado).
 static const uint8_t C3_MARCA[4] = { 0xEE, 0x53, 0x31, 0x36 };
 enum { C3_HELLO = 1, C3_PISCA = 2, C3_LUZBASE = 3, C3_BUZEXT = 4, C3_FREIOAUTO = 5, C3_FREIOTESTE = 6, C3_TESTE433 = 7,
        C3_LED_MODO = 8, C3_LED_BRILHO = 9, C3_LED_COR = 10, C3_LED_FLAGS = 11 };
 static volatile uint16_t displayHandle = BLE_HS_CONN_HANDLE_NONE;   // conexao do display (quem mandou o "oi")
+// Quem recebe o estado: toda conexao que ja mandou algum comando do canal (display, app Android...).
+// Obs.: no celular, o app e o EUC World dividem a MESMA conexao BLE; o EUC World tambem recebe estes
+// quadros (byte 16 = 0xEE, comando que ele nao conhece e ignora).
+static const int MAX_CANAL = 4;
+static volatile uint16_t canalHandles[MAX_CANAL] = { BLE_HS_CONN_HANDLE_NONE, BLE_HS_CONN_HANDLE_NONE,
+                                                     BLE_HS_CONN_HANDLE_NONE, BLE_HS_CONN_HANDLE_NONE };
+static bool canalAdd(uint16_t h) {               // true = entrou agora
+  for (int i = 0; i < MAX_CANAL; i++) if (canalHandles[i] == h) return false;
+  for (int i = 0; i < MAX_CANAL; i++) if (canalHandles[i] == BLE_HS_CONN_HANDLE_NONE) { canalHandles[i] = h; return true; }
+  return false;
+}
+static void canalDel(uint16_t h) {
+  for (int i = 0; i < MAX_CANAL; i++) if (canalHandles[i] == h) canalHandles[i] = BLE_HS_CONN_HANDLE_NONE;
+}
+static int canalQtd() {
+  int n = 0;
+  for (int i = 0; i < MAX_CANAL; i++) if (canalHandles[i] != BLE_HS_CONN_HANDLE_NONE) n++;
+  return n;
+}
 static QueueHandle_t canalQ;                     // comandos do display (o callback so enfileira)
 struct CanalCmd { uint8_t cmd, arg; };
 static volatile bool estadoMudou = true;
@@ -266,9 +286,14 @@ class LocalChrCB : public NimBLECharacteristicCallbacks {
     NimBLEAttValue v = c->getValue();
     if (m.isMain && ehCanal(v.data(), v.size())) {   // comando do display: executa aqui, nao vai pra roda
       if (v.data()[2] == 0x01) {
-        if (displayHandle != info.getConnHandle()) {
-          displayHandle = info.getConnHandle();
-          Serial.printf("[canal] display identificado (handle %u)\n", displayHandle);
+        uint16_t h = info.getConnHandle();
+        if (v.data()[3] == C3_HELLO && v.data()[4] == 0 && displayHandle != h) {   // "sou o display"
+          displayHandle = h;
+          Serial.printf("[canal] display identificado (handle %u)\n", h);
+        }
+        if (canalAdd(h)) {
+          Serial.printf("[canal] %s entrou no canal (handle %u)\n", h == displayHandle ? "display" : "app", h);
+          estadoMudou = true;                    // ja manda o estado pra quem chegou
         }
         CanalCmd cc = { v.data()[3], v.data()[4] };
         xQueueSend(canalQ, &cc, 0);
@@ -313,6 +338,7 @@ class ServerCB : public NimBLEServerCallbacks {
   void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
     if (appConns > 0) appConns--;
     if (info.getConnHandle() == displayHandle) { displayHandle = BLE_HS_CONN_HANDLE_NONE; Serial.println("[canal] display saiu"); }
+    canalDel(info.getConnHandle());
     for (auto& m : maps) subRemove(m, info.getConnHandle());
     Serial.printf("App desconectou apos %lu ms, motivo 0x%X - restam %d\n",
                   (unsigned long)(millis() - phoneConnT), reason, appConns);
@@ -795,9 +821,9 @@ static bool    ledPiscas = true, ledFreio = true;
 // paleta da tela do display: 0 vermelho 1 laranja 2 amarelo 3 verde 4 ciano 5 azul 6 violeta 7 branco
 static const uint8_t LED_PAL[8][3] = { {255,0,0}, {255,90,0}, {255,200,0}, {0,255,0}, {0,255,200}, {0,0,255}, {0x4E,0,0x8F}, {200,200,200} };
 static const int LED_BRILHO_MAX = 60;
-static const int LED_MA_MAX = 2500;
+static const int LED_MA_MAX = 2500;                   // limite de corrente estimada (mA) no 5 V da roda
 static const uint32_t FREIO_PISCA_MS = 120;           // freio nas fitas: 120 ms aceso / 120 ms apagado
-static const int FREIO_TOPO_DE = 23, FREIO_TOPO_ATE = 40;   // trecho de tras do "U" do topo                   // limite de corrente estimada (mA) no 5 V da roda
+static const int FREIO_TOPO_DE = 25, FREIO_TOPO_ATE = 38;   // trecho de tras do "U" do topo (ajustado no mono, 01/11)
 static uint8_t fitaPx[N_FITAS][FITA_MAXPX][3];        // R G B de cada pixel
 static rmt_data_t fitaSimb[FITA_MAXPX * 24];          // so uma fita por vez no fio
 static bool    fitasOk = false;
@@ -1008,15 +1034,17 @@ static void canalLoop() {
                     (uint8_t)ledModo, (uint8_t)ledBrilho, corIdx, (uint8_t)((ledPiscas ? 1 : 0) | (ledFreio ? 2 : 0)) };
   if (memcmp(e, ultimo, 13) != 0) estadoMudou = true;
   static uint32_t tEnvio = 0;
-  uint16_t h = displayHandle;
-  if (h == BLE_HS_CONN_HANDLE_NONE || (!estadoMudou && millis() - tEnvio < 2000)) return;
+  if (canalQtd() == 0 || (!estadoMudou && millis() - tEnvio < 2000)) return;
   NimBLECharacteristic* lc = nullptr;
   for (auto& m : maps) if (m.isMain) lc = m.local;
   if (!lc) return;
   uint8_t p[20] = {0xAA, 0x55, 0x02};
   memcpy(p + 3, e, 13);                          // bytes 3..15
   memcpy(p + 16, C3_MARCA, 4);
-  lc->notify(p, sizeof(p), h);                   // so para o display
+  for (int i = 0; i < MAX_CANAL; i++) {          // so para quem esta no canal (display, app)
+    uint16_t h = canalHandles[i];
+    if (h != BLE_HS_CONN_HANDLE_NONE) lc->notify(p, sizeof(p), h);
+  }
   memcpy(ultimo, e, 13);
   estadoMudou = false;
   tEnvio = millis();
@@ -1124,9 +1152,9 @@ static void handleSerialConsole() {
       continue;
     }
     if (orig == "status") {
-      Serial.printf("MAC do C3 (para o display: TARGET_MAC = ...): %s | display: %s\n",
+      Serial.printf("MAC do C3 (para o display: TARGET_MAC = ...): %s | display: %s | no canal: %d\n",
                     NimBLEDevice::getAddress().toString().c_str(),
-                    displayHandle != BLE_HS_CONN_HANDLE_NONE ? "conectado" : "nao");
+                    displayHandle != BLE_HS_CONN_HANDLE_NONE ? "conectado" : "nao", canalQtd());
       Serial.printf("%s | roda: %s | apps: %d/%d | dados: %s | %.1f km/h %.2f A %.1f V pwm %d\n", VERSAO,
                     mainRemote ? "conectada" : "nao", appConns, MAX_APPS,
                     msSemDados() < 2000 ? "chegando" : "parados", wd.speed, wd.current, wd.voltage, wd.pwm);
