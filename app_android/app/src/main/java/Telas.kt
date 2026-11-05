@@ -50,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -267,6 +268,21 @@ private fun TelaRoda(link: C3Link) {
             Botao("Desliga", Modifier.weight(1f)) { link.enviarRoda(0x73, 0x13) }
             Botao("Auto", Modifier.weight(1f)) { link.enviarRoda(0x73, 0x14) }
         }
+    }
+    Secao("Notificação") {
+        val prefs = LocalContext.current.getSharedPreferences("s16", android.content.Context.MODE_PRIVATE)
+        var qual by remember { mutableStateOf(prefs.getString(ConexaoService.PREF_BUZINA, "roda") ?: "roda") }
+        Text("Botão \"Buzina\" da notificação toca:", color = Apagado, fontSize = 13.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("roda" to "Buzina da roda", "externa" to "Buzina externa").forEach { (chave, nome) ->
+                Botao(nome, Modifier.weight(1f), selecionado = qual == chave) {
+                    qual = chave
+                    prefs.edit().putString(ConexaoService.PREF_BUZINA, chave).apply()
+                }
+            }
+        }
+        Text("A notificação mantém a conexão mesmo com o app fechado. Para encerrar, use \"Desconectar\".",
+            color = Apagado, fontSize = 13.sp)
     }
 }
 

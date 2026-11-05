@@ -132,6 +132,8 @@ class C3Link private constructor(private val ctx: Context) {
     private var ocupado = false
     private var tokenEscrita = 0
     private var querConectado = false
+    /** true depois de um conectar/reconectar, ate o "Desconectar". */
+    val querendoConexao: Boolean get() = querConectado
     private var macAtual: String? = null
 
     // ---------------- busca ----------------
@@ -163,7 +165,16 @@ class C3Link private constructor(private val ctx: Context) {
     }
 
     // ---------------- conexao ----------------
+    /** Conecta pedido pelo usuario: tambem liga o servico (notificacao + conexao com a tela apagada). */
     fun conectar(mac: String) {
+        ConexaoService.iniciar(ctx)
+        reconectar(mac)
+    }
+
+    /** Conecta sem mexer no servico (usado nas novas tentativas e pelo proprio servico). */
+    fun reconectar(mac: String) {
+        querConectado = true                                     // ja marca (o servico consulta isto)
+        macAtual = mac
         main.post {
             if (conexao.value == Conexao.DEMO) sairDemo()
             pararBusca()
@@ -179,6 +190,8 @@ class C3Link private constructor(private val ctx: Context) {
     }
 
     fun desconectar() {
+        querConectado = false
+        ConexaoService.parar(ctx)
         main.post {
             querConectado = false
             gatt?.disconnect()
@@ -208,7 +221,7 @@ class C3Link private constructor(private val ctx: Context) {
                     conexao.value = Conexao.DESCONECTADO
                     if (querConectado) {                         // roda desligou? tenta de novo
                         main.postDelayed({
-                            if (querConectado && gatt == null) macAtual?.let { conectar(it) }
+                            if (querConectado && gatt == null) macAtual?.let { reconectar(it) }
                         }, 3_000)
                     }
                 }
@@ -385,6 +398,7 @@ class C3Link private constructor(private val ctx: Context) {
     // ---------------- demonstracao (sem C3) ----------------
     /** Finge um C3 conectado: os comandos mudam um estado local, como o C3 faria. */
     fun entrarDemo() {
+        ConexaoService.parar(ctx)
         main.post {
             pararBusca()
             querConectado = false

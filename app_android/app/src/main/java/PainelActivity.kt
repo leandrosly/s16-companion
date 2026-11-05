@@ -24,7 +24,7 @@ class PainelActivity : ComponentActivity() {
     private val macSalvo = mutableStateOf<String?>(null)
 
     private val pedido = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
-        temPermissao.value = r.values.all { it }
+        temPermissao.value = checaPermissao()                    // (notificacao negada nao impede o app)
         conectarSalvo()
     }
 
@@ -33,6 +33,12 @@ class PainelActivity : ComponentActivity() {
             arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
         else
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+
+    // o que pedimos ao usuario: Bluetooth (obrigatorio) + notificacoes (Android 13+, para ver a notificacao)
+    private fun pedir(): Array<String> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            permissoes() + Manifest.permission.POST_NOTIFICATIONS
+        else permissoes()
 
     private fun checaPermissao() = permissoes().all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
@@ -45,7 +51,8 @@ class PainelActivity : ComponentActivity() {
         val prefs = getSharedPreferences("s16", Context.MODE_PRIVATE)
         macSalvo.value = prefs.getString("mac_c3", null)
         temPermissao.value = checaPermissao()
-        if (!temPermissao.value) pedido.launch(permissoes())
+        val falta = pedir().any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        if (falta) pedido.launch(pedir())
 
         setContent {
             App(
@@ -53,7 +60,7 @@ class PainelActivity : ComponentActivity() {
                 macSalvo = macSalvo.value,
                 temPermissao = temPermissao.value,
                 btLigado = btLigado.value,
-                pedirPermissao = { pedido.launch(permissoes()) },
+                pedirPermissao = { pedido.launch(pedir()) },
                 salvarMac = { mac ->
                     macSalvo.value = mac
                     prefs.edit().putString("mac_c3", mac).apply()
@@ -76,8 +83,6 @@ class PainelActivity : ComponentActivity() {
         macSalvo.value?.let { link.conectar(it) }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        if (isFinishing) link.desconectar()                      // girar a tela nao desconecta
-    }
+    // Fechar o app NAO desconecta: o servico (notificacao) segura a conexao.
+    // Para desconectar de vez: botao "Desconectar" no app.
 }
