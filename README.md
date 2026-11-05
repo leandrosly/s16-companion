@@ -664,6 +664,14 @@ Registradas para não se perderem — **não** são compromisso.
 - ✅ No C3 (04/11): o estado vai para toda conexão que entrou no canal (`canalHandles`); HELLO arg 0 = display, arg 1 = app. Testar o EUC World no mesmo celular (o Android junta as duas numa conexão BLE só; os frames de estado têm o marcador `EE 53 31 36` e devem ser ignorados por ele).
 - **Sons:** buzinas customizadas e ronco de motor pela velocidade, tocados na roda (KingSong music = A2DP/mídia) com os avisos de voz no capacete (só "Chamadas"/HFP, via `setCommunicationDevice`). Os sons são prototipados no `laboratorio_sons/`. Alternativa sem celular: DFPlayer Mini ou MAX98357A (I2S) no C3.
 
+**Sons pelo amplificador da roda (plano de 04/11, investigação na placa)**
+- Amplificador: **Chipstar CS8618** (U8, placa KS-S16_DISPLAY_V1.0, junto dos 4 indutores 4R7): classe D 2×15 W, 7–18,5 V, TSSOP-28 com pad. Nomes dos pinos iguais aos do **TPA3110D2** (pinagem compatível; confirmada nas entradas por continuidade). PVCC = 13,8 V.
+- Entradas (single-ended pela KingSong): pino 3 LINP ← R53 (2k2) ← C58 ← áudio E | pino 4 LINN ← R54 ← C59 ← GND | pino 11 RINN ← R55 ← C60 ← GND | pino 12 RINP ← R56 ← C61 ← áudio D.
+- **Pino 1 (SD):** a roda deixa em 0 V no silêncio e 3,3 V tocando, puxando por ~1 kΩ (provável R51). Pad do **R52** (vazio) = acesso ao pino 1; o OUTRO pad do R52 tem **13,8 V (PVCC) — nunca ligar no C3**. Teste: 3,3 V → 1N4148 → pad do pino 1 = **2,66 V e o amplificador liga** (confirmado).
+- Plano: C3 → I2S → **PCM5102A** (encomendado) → pontas soltas de **C59/C60** (lado que hoje vai no GND), usando a entrada N do amplificador: saída = ganho × (música − nosso som). Terra do DAC tirado dos mesmos pads de GND do C59/C60. DAC sempre alimentado.
+- Pinos do C3: **GPIO1** → diodo → SD (não usar GPIO2: é de boot) | **GPIO0** BCK | **GPIO2** LCK | **GPIO21** DIN | MCK do PCM5102A no GND. Com isso o C3 fica sem pinos livres.
+- Falta medir: pinos 5/6 (GAIN0/GAIN1) e o nível da música no lado "?" do C58 (osciloscópio, volume máximo).
+
 **Hardware**
 - GPS (módulo de drone M10, ex. HGLRC M100 Mini) na UART — também dá hora exata.
 - Placa futura com tudo embutido: Waveshare ESP32-S3-Touch-LCD-2.8 (IMU + RTC) ou LilyGO T-Watch Ultra.

@@ -9,3 +9,5 @@
 .externalNativeBuild
 .cxx
 local.properties
+# logs salvos do Logcat (Android Studio)
+/logcat/
