@@ -1,0 +1,717 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Placa do C3 no S16</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Folha de desenho tecnico: o esquema ocupa a largura toda; abaixo, tabelas de ligacoes e pecas para montar a placa */
+:root {
+  --bg: #F3F5F4;
+  --paper: #FFFFFF;
+  --ink: #1C262C;
+  --dim: #5E6B73;
+  --line: #C9D1D4;
+  --wire: #1F5F78;
+  --accent: #C25E00;
+  --flag: #E3EEF2;
+  --warn-bg: #FBE9E4;
+  --warn: #B3261E;
+  --alt-bg: #EAF3EC;
+  --alt: #2E6B3A;
+  --display: 'Archivo', 'Segoe UI', system-ui, sans-serif;
+  --body: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111618; --paper: #182024; --ink: #DCE4E8; --dim: #8D9BA3; --line: #2D383E;
+    --wire: #6FB7D0; --accent: #F2A23A; --flag: #21323A; --warn-bg: #3A1D1A; --warn: #FF8A7A;
+    --alt-bg: #1B2E21; --alt: #8FD29C; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111618; --paper: #182024; --ink: #DCE4E8; --dim: #8D9BA3; --line: #2D383E;
+  --wire: #6FB7D0; --accent: #F2A23A; --flag: #21323A; --warn-bg: #3A1D1A; --warn: #FF8A7A;
+  --alt-bg: #1B2E21; --alt: #8FD29C; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body); margin: 0; }
+.wrap {
+  max-width: 1500px; margin: 0 auto; display: grid; gap: 22px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 22px 48px;
+}
+header { display: grid; gap: 4px; }
+h1 { font: 700 clamp(24px, 3.4vw, 32px)/1.15 var(--display); margin: 0; letter-spacing: .01em; text-wrap: balance; }
+.meta { font: 500 13px var(--mono); color: var(--dim); }
+h2 { font: 700 18px/1.2 var(--display); margin: 0 0 10px; }
+p { margin: 0; max-width: 72ch; }
+.folha { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; }
+.folha svg { display: block; width: 100%; min-width: 1100px; height: auto; }
+.dica { font-size: 13px; color: var(--dim); }
+/* svg */
+svg text { font-family: var(--mono); fill: var(--ink); }
+svg .frame { fill: none; stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 5 4; }
+svg .sec { font: 600 12.5px var(--mono); letter-spacing: .08em; fill: var(--dim); }
+svg .blk { fill: var(--paper); stroke: var(--ink); stroke-width: 1.8; }
+svg .ttl { font: 700 15px var(--display); }
+svg .sub { font-size: 11.5px; fill: var(--dim); }
+svg .pinn { font-size: 12.5px; font-weight: 600; }
+svg .pinnum { font-size: 10.5px; fill: var(--dim); }
+svg .lbl { font-size: 12.5px; }
+svg .val { font-size: 11.5px; fill: var(--dim); }
+svg .note { font: 400 11.5px var(--body); fill: var(--dim); }
+svg .w { fill: none; stroke: var(--wire); stroke-width: 1.7; }
+svg .part { fill: var(--paper); stroke: var(--ink); stroke-width: 1.6; }
+svg .plate { stroke: var(--ink); stroke-width: 2.2; fill: none; }
+svg .dot { fill: var(--wire); }
+svg .gndsym line { stroke: var(--ink); stroke-width: 1.7; }
+svg .usb { fill: var(--flag); stroke: var(--ink); stroke-width: 1.4; }
+svg .conn { fill: var(--paper); stroke: var(--ink); stroke-width: 1.6; }
+svg .net polygon { fill: var(--flag); stroke: var(--wire); stroke-width: 1.2; transition: fill .15s; }
+svg .netn { font-size: 11.5px; font-weight: 600; }
+svg .net { cursor: pointer; }
+svg .net.on polygon { fill: var(--accent); stroke: var(--accent); }
+svg .net.on .netn { fill: var(--paper); }
+svg .cut { stroke: var(--warn); stroke-width: 1.6; stroke-dasharray: 3 3; fill: none; }
+svg .x { stroke: var(--warn); stroke-width: 2.2; }
+svg .warn { fill: var(--warn-bg); stroke: var(--warn); stroke-width: 1.4; }
+svg .warnt { font: 600 13px var(--body); fill: var(--warn); }
+svg .alt { fill: var(--alt-bg); stroke: var(--alt); stroke-width: 1.2; stroke-dasharray: 5 4; }
+svg .altt { font: 600 13px var(--body); fill: var(--alt); }
+/* tabelas */
+.grade { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+@media (max-width: 980px) { .grade { grid-template-columns: minmax(0, 1fr); } }
+.cartao { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 16px; min-width: 0; }
+.tab { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th { text-align: left; font: 600 11.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--dim); border-bottom: 1.5px solid var(--ink); padding: 6px 8px; }
+td { border-bottom: 1px solid var(--line); padding: 7px 8px; vertical-align: top; }
+td.rede { font: 600 12.5px var(--mono); white-space: nowrap; }
+tr[data-net] { cursor: pointer; }
+tr.on td { background: var(--flag); }
+td code, li code { font: 500 12.5px var(--mono); }
+ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.avisos li::marker { color: var(--warn); }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>Placa do C3 no S16</h1>
+    <span class="meta">S16 Companion · esquema geral · ponte_c3 (C3 SuperMini) · 05/11/2026</span>
+    <p class="dica">Toque ou passe o mouse num nome de rede (as bandeirinhas, ou uma linha da tabela) para acender todos os pontos ligados a ela. Rede com o mesmo nome = mesmo fio.</p>
+  </header>
+
+  <div class="folha">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1460 1100" role="img" aria-label="Esquema eletrico da placa do C3 no S16">
+<rect x="20" y="20" width="400" height="240" class="frame"/>
+<text x="32" y="42" class="sec" text-anchor="start">ALIMENTAÇÃO (vem da placa do display)</text>
+<rect x="48" y="80" width="110" height="70" rx="3" class="blk"/>
+<text x="103.0" y="70" class="ttl" text-anchor="middle">Roda</text>
+<text x="103.0" y="168" class="sub" text-anchor="middle">pads da USB do display</text>
+<polyline points="158,100 184,100" class="w"/>
+<text x="152" y="104" class="pinn" text-anchor="end">+5VA</text>
+<polyline points="158,130 184,130" class="w"/>
+<text x="152" y="134" class="pinn" text-anchor="end">GND1</text>
+<polyline points="184,100 210.0,100" class="w"/>
+<polyline points="228.0,100 254,100" class="w"/>
+<polygon points="210.0,91 210.0,109 227.0,100" class="part"/><line x1="228.0" y1="91" x2="228.0" y2="109" class="plate"/>
+<text x="219.0" y="86" class="val" text-anchor="middle">D1 1N4007</text>
+<polyline points="254,100 340,100" class="w"/>
+<circle cx="260" cy="100" r="3.2" class="dot"/>
+<circle cx="305" cy="100" r="3.2" class="dot"/>
+<polyline points="260,100 260,133.5" class="w"/>
+<polyline points="260,141.5 260,175" class="w"/>
+<line x1="249" y1="133.5" x2="271" y2="133.5" class="plate"/>
+<path d="M249,144.5 Q260,138.5 271,144.5" class="plate" fill="none"/>
+<text x="245" y="130.5" class="val" text-anchor="middle">+</text>
+<text x="244" y="141.5" class="val" text-anchor="end">C1 470µF</text>
+<polyline points="260,175 260,185" class="w"/>
+<g class="gndsym"><line x1="249" y1="185" x2="271" y2="185"/><line x1="253" y1="190" x2="267" y2="190"/><line x1="257" y1="195" x2="263" y2="195"/></g>
+<polyline points="305,100 305,133.5" class="w"/>
+<polyline points="305,141.5 305,175" class="w"/>
+<line x1="294" y1="133.5" x2="316" y2="133.5" class="plate"/>
+<line x1="294" y1="141.5" x2="316" y2="141.5" class="plate"/>
+<text x="321" y="141.5" class="val" text-anchor="start">C2 100nF</text>
+<polyline points="305,175 305,185" class="w"/>
+<g class="gndsym"><line x1="294" y1="185" x2="316" y2="185"/><line x1="298" y1="190" x2="312" y2="190"/><line x1="302" y1="195" x2="308" y2="195"/></g>
+<polyline points="340,100 352,100" class="w"/>
+<g class="net " data-net="+5V"><polygon points="352,100 360,90 392.8,90 392.8,110 360,110"/>
+<text x="365" y="104.5" class="netn" text-anchor="start">+5V</text>
+</g>
+<polyline points="184,130 204,130 204,150" class="w"/>
+<polyline points="204,150 204,160" class="w"/>
+<g class="gndsym"><line x1="193" y1="160" x2="215" y2="160"/><line x1="197" y1="165" x2="211" y2="165"/><line x1="201" y1="170" x2="207" y2="170"/></g>
+<text x="48" y="238" class="note" text-anchor="start">D1 em série: a roda nunca recebe corrente do C3 pela USB</text>
+<rect x="20" y="280" width="400" height="380" class="frame"/>
+<text x="32" y="302" class="sec" text-anchor="start">RÁDIO 433 MHz</text>
+<rect x="220" y="320" width="120" height="100" rx="3" class="blk"/>
+<text x="280.0" y="310" class="ttl" text-anchor="middle">TX STX882</text>
+<polyline points="194,340 220,340" class="w"/>
+<text x="226" y="344" class="pinn" text-anchor="start">DATA</text>
+<polyline points="194,370 220,370" class="w"/>
+<text x="226" y="374" class="pinn" text-anchor="start">VCC</text>
+<polyline points="194,400 220,400" class="w"/>
+<text x="226" y="404" class="pinn" text-anchor="start">GND</text>
+<polyline points="340,340 366,340" class="w"/>
+<text x="334" y="344" class="pinn" text-anchor="end">ANT</text>
+<polyline points="366,340 396,340 396,316" class="w"/>
+<polyline points="386,306 396,316 406,306" class="w"/>
+<text x="414" y="314" class="sub" text-anchor="start">17,3 cm</text>
+<g class="net " data-net="TX433"><polygon points="138.0,330 186,330 194,340 186,350 138.0,350"/>
+<text x="145.0" y="344.5" class="netn" text-anchor="start">TX433</text>
+</g>
+<g class="net " data-net="+5V"><polygon points="50,370 58,360 90.8,360 90.8,380 58,380"/>
+<text x="63" y="374.5" class="netn" text-anchor="start">+5V</text>
+</g>
+<polyline points="93,370 102.0,370" class="w"/>
+<polyline points="134.0,370 143,370" class="w"/>
+<rect x="102.0" y="364" width="32" height="12" class="part"/>
+<text x="118.0" y="359" class="val" text-anchor="middle">R1 10Ω</text>
+<polyline points="143,370 194,370" class="w"/>
+<circle cx="165" cy="370" r="3.2" class="dot"/>
+<polyline points="165,370 165,391.0" class="w"/>
+<polyline points="165,399.0 165,420" class="w"/>
+<line x1="154" y1="391.0" x2="176" y2="391.0" class="plate"/>
+<path d="M154,402.0 Q165,396.0 176,402.0" class="plate" fill="none"/>
+<text x="150" y="388.0" class="val" text-anchor="middle">+</text>
+<text x="149" y="399.0" class="val" text-anchor="end">C3 220µF</text>
+<polyline points="165,420 165,430" class="w"/>
+<g class="gndsym"><line x1="154" y1="430" x2="176" y2="430"/><line x1="158" y1="435" x2="172" y2="435"/><line x1="162" y1="440" x2="168" y2="440"/></g>
+<text x="40" y="462" class="note" text-anchor="start">R1 + C3: filtro contra o ruído do TX nos falantes</text>
+<polyline points="194,400 205,400 205,412" class="w"/>
+<polyline points="205,412 205,422" class="w"/>
+<g class="gndsym"><line x1="194" y1="422" x2="216" y2="422"/><line x1="198" y1="427" x2="212" y2="427"/><line x1="202" y1="432" x2="208" y2="432"/></g>
+<rect x="220" y="490" width="120" height="130" rx="3" class="blk"/>
+<text x="280.0" y="480" class="ttl" text-anchor="middle">RX SRX882S</text>
+<polyline points="194,510 220,510" class="w"/>
+<text x="226" y="514" class="pinn" text-anchor="start">VCC</text>
+<polyline points="194,540 220,540" class="w"/>
+<text x="226" y="544" class="pinn" text-anchor="start">CS</text>
+<polyline points="194,570 220,570" class="w"/>
+<text x="226" y="574" class="pinn" text-anchor="start">DATA</text>
+<polyline points="194,600 220,600" class="w"/>
+<text x="226" y="604" class="pinn" text-anchor="start">GND</text>
+<polyline points="340,510 366,510" class="w"/>
+<text x="334" y="514" class="pinn" text-anchor="end">ANT</text>
+<polyline points="366,510 396,510 396,486" class="w"/>
+<polyline points="386,476 396,486 406,476" class="w"/>
+<text x="414" y="484" class="sub" text-anchor="start">17,3 cm</text>
+<polyline points="130,510 194,510" class="w"/>
+<g class="net " data-net="3V3"><polygon points="89.2,500 122,500 130,510 122,520 89.2,520"/>
+<text x="96.2" y="514.5" class="netn" text-anchor="start">3V3</text>
+</g>
+<polyline points="170,510 170,540 194,540" class="w"/>
+<circle cx="170" cy="510" r="3.2" class="dot"/>
+<polyline points="140,570 194,570" class="w"/>
+<g class="net " data-net="RX433"><polygon points="84.0,560 132,560 140,570 132,580 84.0,580"/>
+<text x="91.0" y="574.5" class="netn" text-anchor="start">RX433</text>
+</g>
+<polyline points="194,600 205,600 205,612" class="w"/>
+<polyline points="205,612 205,622" class="w"/>
+<g class="gndsym"><line x1="194" y1="622" x2="216" y2="622"/><line x1="198" y1="627" x2="212" y2="627"/><line x1="202" y1="632" x2="208" y2="632"/></g>
+<text x="40" y="650" class="note" text-anchor="start">CS do SRX882S tem que ir no 3V3 (senão ele dorme)</text>
+<rect x="440" y="20" width="470" height="640" class="frame"/>
+<text x="452" y="42" class="sec" text-anchor="start">ESP32-C3 SUPERMINI</text>
+<rect x="600" y="130" width="150" height="410" rx="3" class="blk"/>
+<text x="675.0" y="120" class="ttl" text-anchor="middle"></text>
+<text x="675.0" y="558" class="sub" text-anchor="middle">vista de cima, USB para fora da tampa</text>
+<rect x="645" y="112" width="60" height="22" rx="4" class="usb"/>
+<text x="675" y="104" class="sub" text-anchor="middle">USB-C</text>
+<polyline points="574,175 600,175" class="w"/>
+<text x="606" y="179" class="pinn" text-anchor="start">5V</text>
+<g class="net " data-net="+5V"><polygon points="533.2,165 566,165 574,175 566,185 533.2,185"/>
+<text x="540.2" y="179.5" class="netn" text-anchor="start">+5V</text>
+</g>
+<polyline points="574,221 600,221" class="w"/>
+<text x="606" y="225" class="pinn" text-anchor="start">GND</text>
+<polyline points="574,221 564,221 564,229" class="w"/>
+<polyline points="564,229 564,239" class="w"/>
+<g class="gndsym"><line x1="553" y1="239" x2="575" y2="239"/><line x1="557" y1="244" x2="571" y2="244"/><line x1="561" y1="249" x2="567" y2="249"/></g>
+<polyline points="574,267 600,267" class="w"/>
+<text x="606" y="271" class="pinn" text-anchor="start">3V3</text>
+<g class="net " data-net="3V3"><polygon points="533.2,257 566,257 574,267 566,277 533.2,277"/>
+<text x="540.2" y="271.5" class="netn" text-anchor="start">3V3</text>
+</g>
+<polyline points="574,313 600,313" class="w"/>
+<text x="606" y="317" class="pinn" text-anchor="start">GPIO4</text>
+<g class="net " data-net="RX433"><polygon points="518.0,303 566,303 574,313 566,323 518.0,323"/>
+<text x="525.0" y="317.5" class="netn" text-anchor="start">RX433</text>
+</g>
+<polyline points="574,359 600,359" class="w"/>
+<text x="606" y="363" class="pinn" text-anchor="start">GPIO3</text>
+<g class="net " data-net="TX433"><polygon points="518.0,349 566,349 574,359 566,369 518.0,369"/>
+<text x="525.0" y="363.5" class="netn" text-anchor="start">TX433</text>
+</g>
+<polyline points="574,405 600,405" class="w"/>
+<text x="606" y="409" class="pinn" text-anchor="start">GPIO2</text>
+<g class="net " data-net="I2S_LCK"><polygon points="502.8,395 566,395 574,405 566,415 502.8,415"/>
+<text x="509.8" y="409.5" class="netn" text-anchor="start">I2S_LCK</text>
+</g>
+<polyline points="574,451 600,451" class="w"/>
+<text x="606" y="455" class="pinn" text-anchor="start">GPIO1</text>
+<g class="net " data-net="AMP_EN"><polygon points="510.4,441 566,441 574,451 566,461 510.4,461"/>
+<text x="517.4" y="455.5" class="netn" text-anchor="start">AMP_EN</text>
+</g>
+<polyline points="574,497 600,497" class="w"/>
+<text x="606" y="501" class="pinn" text-anchor="start">GPIO0</text>
+<g class="net " data-net="I2S_BCK"><polygon points="502.8,487 566,487 574,497 566,507 502.8,507"/>
+<text x="509.8" y="501.5" class="netn" text-anchor="start">I2S_BCK</text>
+</g>
+<polyline points="750,175 776,175" class="w"/>
+<text x="744" y="179" class="pinn" text-anchor="end">GPIO5</text>
+<g class="net " data-net="LED_TOPO"><polygon points="776,175 784,165 854.8,165 854.8,185 784,185"/>
+<text x="789" y="179.5" class="netn" text-anchor="start">LED_TOPO</text>
+</g>
+<polyline points="750,221 776,221" class="w"/>
+<text x="744" y="225" class="pinn" text-anchor="end">GPIO6</text>
+<g class="net " data-net="LED_TRAS_E"><polygon points="776,221 784,211 870.0,211 870.0,231 784,231"/>
+<text x="789" y="225.5" class="netn" text-anchor="start">LED_TRAS_E</text>
+</g>
+<polyline points="750,267 776,267" class="w"/>
+<text x="744" y="271" class="pinn" text-anchor="end">GPIO7</text>
+<g class="net " data-net="LED_TRAS_D"><polygon points="776,267 784,257 870.0,257 870.0,277 784,277"/>
+<text x="789" y="271.5" class="netn" text-anchor="start">LED_TRAS_D</text>
+</g>
+<polyline points="750,313 776,313" class="w"/>
+<text x="744" y="317" class="pinn" text-anchor="end">GPIO8</text>
+<text x="782" y="317" class="note" text-anchor="start">LED azul da placa</text>
+<polyline points="750,359 776,359" class="w"/>
+<text x="744" y="363" class="pinn" text-anchor="end">GPIO9</text>
+<text x="782" y="363" class="note" text-anchor="start">botão BOOT</text>
+<polyline points="750,405 776,405" class="w"/>
+<text x="744" y="409" class="pinn" text-anchor="end">GPIO10</text>
+<g class="net " data-net="LED_FAROL_E"><polygon points="776,405 784,395 877.6,395 877.6,415 784,415"/>
+<text x="789" y="409.5" class="netn" text-anchor="start">LED_FAROL_E</text>
+</g>
+<polyline points="750,451 776,451" class="w"/>
+<text x="744" y="455" class="pinn" text-anchor="end">GPIO20</text>
+<g class="net " data-net="LED_FAROL_D"><polygon points="776,451 784,441 877.6,441 877.6,461 784,461"/>
+<text x="789" y="455.5" class="netn" text-anchor="start">LED_FAROL_D</text>
+</g>
+<polyline points="750,497 776,497" class="w"/>
+<text x="744" y="501" class="pinn" text-anchor="end">GPIO21</text>
+<g class="net " data-net="I2S_DIN"><polygon points="776,497 784,487 847.2,487 847.2,507 784,507"/>
+<text x="789" y="501.5" class="netn" text-anchor="start">I2S_DIN</text>
+</g>
+<text x="452" y="620" class="note" text-anchor="start">GPIO2: pino de boot (só como clock do DAC, nunca no diodo)</text>
+<text x="452" y="640" class="note" text-anchor="start">GPIO8 / GPIO9: ficam como estão (LED e botão da placa)</text>
+<rect x="930" y="20" width="510" height="640" class="frame"/>
+<text x="942" y="42" class="sec" text-anchor="start">FITAS DE LED (74HCT245: 3,3 V → 5 V)</text>
+<rect x="1080" y="110" width="120" height="440" rx="3" class="blk"/>
+<text x="1140.0" y="100" class="ttl" text-anchor="middle">U2 74HCT245</text>
+<text x="1140.0" y="568" class="sub" text-anchor="middle">DIP-20</text>
+<polyline points="1054,140 1080,140" class="w"/>
+<text x="1086" y="144" class="pinn" text-anchor="start">DIR</text>
+<text x="1076" y="136" class="pinnum" text-anchor="end">1</text>
+<g class="net " data-net="+5V"><polygon points="1013.2,130 1046,130 1054,140 1046,150 1013.2,150"/>
+<text x="1020.2" y="144.5" class="netn" text-anchor="start">+5V</text>
+</g>
+<polyline points="1054,185 1080,185" class="w"/>
+<text x="1086" y="189" class="pinn" text-anchor="start">A1</text>
+<text x="1076" y="181" class="pinnum" text-anchor="end">2</text>
+<g class="net " data-net="LED_TOPO"><polygon points="975.2,175 1046,175 1054,185 1046,195 975.2,195"/>
+<text x="982.2" y="189.5" class="netn" text-anchor="start">LED_TOPO</text>
+</g>
+<polyline points="1054,221 1080,221" class="w"/>
+<text x="1086" y="225" class="pinn" text-anchor="start">A2</text>
+<text x="1076" y="217" class="pinnum" text-anchor="end">3</text>
+<g class="net " data-net="LED_TRAS_E"><polygon points="960.0,211 1046,211 1054,221 1046,231 960.0,231"/>
+<text x="967.0" y="225.5" class="netn" text-anchor="start">LED_TRAS_E</text>
+</g>
+<polyline points="1054,257 1080,257" class="w"/>
+<text x="1086" y="261" class="pinn" text-anchor="start">A3</text>
+<text x="1076" y="253" class="pinnum" text-anchor="end">4</text>
+<g class="net " data-net="LED_TRAS_D"><polygon points="960.0,247 1046,247 1054,257 1046,267 960.0,267"/>
+<text x="967.0" y="261.5" class="netn" text-anchor="start">LED_TRAS_D</text>
+</g>
+<polyline points="1054,293 1080,293" class="w"/>
+<text x="1086" y="297" class="pinn" text-anchor="start">A4</text>
+<text x="1076" y="289" class="pinnum" text-anchor="end">5</text>
+<g class="net " data-net="LED_FAROL_E"><polygon points="952.4,283 1046,283 1054,293 1046,303 952.4,303"/>
+<text x="959.4" y="297.5" class="netn" text-anchor="start">LED_FAROL_E</text>
+</g>
+<polyline points="1054,329 1080,329" class="w"/>
+<text x="1086" y="333" class="pinn" text-anchor="start">A5</text>
+<text x="1076" y="325" class="pinnum" text-anchor="end">6</text>
+<g class="net " data-net="LED_FAROL_D"><polygon points="952.4,319 1046,319 1054,329 1046,339 952.4,339"/>
+<text x="959.4" y="333.5" class="netn" text-anchor="start">LED_FAROL_D</text>
+</g>
+<polyline points="1054,365 1080,365" class="w"/>
+<text x="1086" y="369" class="pinn" text-anchor="start">A6</text>
+<text x="1076" y="361" class="pinnum" text-anchor="end">7</text>
+<polyline points="1054,365 1040,365" class="w"/>
+<circle cx="1040" cy="365" r="3.2" class="dot"/>
+<polyline points="1054,401 1080,401" class="w"/>
+<text x="1086" y="405" class="pinn" text-anchor="start">A7</text>
+<text x="1076" y="397" class="pinnum" text-anchor="end">8</text>
+<polyline points="1054,401 1040,401" class="w"/>
+<circle cx="1040" cy="401" r="3.2" class="dot"/>
+<polyline points="1054,437 1080,437" class="w"/>
+<text x="1086" y="441" class="pinn" text-anchor="start">A8</text>
+<text x="1076" y="433" class="pinnum" text-anchor="end">9</text>
+<polyline points="1054,437 1040,437" class="w"/>
+<polyline points="1040,365 1040,477" class="w"/>
+<polyline points="1040,477 1040,487" class="w"/>
+<g class="gndsym"><line x1="1029" y1="487" x2="1051" y2="487"/><line x1="1033" y1="492" x2="1047" y2="492"/><line x1="1037" y1="497" x2="1043" y2="497"/></g>
+<text x="1032" y="353" class="note" text-anchor="end">A6–A8 no GND</text>
+<polyline points="1054,505 1080,505" class="w"/>
+<text x="1086" y="509" class="pinn" text-anchor="start">OE</text>
+<text x="1076" y="501" class="pinnum" text-anchor="end">19</text>
+<polyline points="1054,505 1044,505 1044,512" class="w"/>
+<polyline points="1044,512 1044,522" class="w"/>
+<g class="gndsym"><line x1="1033" y1="522" x2="1055" y2="522"/><line x1="1037" y1="527" x2="1051" y2="527"/><line x1="1041" y1="532" x2="1047" y2="532"/></g>
+<polyline points="1054,535 1080,535" class="w"/>
+<text x="1086" y="539" class="pinn" text-anchor="start">GND</text>
+<text x="1076" y="531" class="pinnum" text-anchor="end">10</text>
+<polyline points="1054,535 1024,535 1024,545" class="w"/>
+<polyline points="1024,545 1024,555" class="w"/>
+<g class="gndsym"><line x1="1013" y1="555" x2="1035" y2="555"/><line x1="1017" y1="560" x2="1031" y2="560"/><line x1="1021" y1="565" x2="1027" y2="565"/></g>
+<polyline points="1200,140 1226,140" class="w"/>
+<text x="1194" y="144" class="pinn" text-anchor="end">VCC</text>
+<text x="1204" y="136" class="pinnum" text-anchor="start">20</text>
+<polyline points="1226,140 1240,140 1240,95 1330,95" class="w"/>
+<g class="net " data-net="+5V"><polygon points="1330,95 1338,85 1370.8,85 1370.8,105 1338,105"/>
+<text x="1343" y="99.5" class="netn" text-anchor="start">+5V</text>
+</g>
+<circle cx="1285" cy="95" r="3.2" class="dot"/>
+<polyline points="1285,95 1285,107.5" class="w"/>
+<polyline points="1285,115.5 1285,128" class="w"/>
+<line x1="1274" y1="107.5" x2="1296" y2="107.5" class="plate"/>
+<line x1="1274" y1="115.5" x2="1296" y2="115.5" class="plate"/>
+<text x="1301" y="115.5" class="val" text-anchor="start">C5 100nF</text>
+<polyline points="1285,128 1285,138" class="w"/>
+<g class="gndsym"><line x1="1274" y1="138" x2="1296" y2="138"/><line x1="1278" y1="143" x2="1292" y2="143"/><line x1="1282" y1="148" x2="1288" y2="148"/></g>
+<polyline points="1200,185 1226,185" class="w"/>
+<text x="1194" y="189" class="pinn" text-anchor="end">B1</text>
+<text x="1204" y="181" class="pinnum" text-anchor="start">18</text>
+<polyline points="1226,185 1240.0,185" class="w"/>
+<polyline points="1272.0,185 1286,185" class="w"/>
+<rect x="1240.0" y="179" width="32" height="12" class="part"/>
+<text x="1256.0" y="174" class="val" text-anchor="middle">R2 47Ω</text>
+<polyline points="1286,185 1296,185" class="w"/>
+<circle cx="1301" cy="185" r="5" class="conn"/>
+<text x="1312" y="189" class="lbl" text-anchor="start">topo (64)</text>
+<polyline points="1200,221 1226,221" class="w"/>
+<text x="1194" y="225" class="pinn" text-anchor="end">B2</text>
+<text x="1204" y="217" class="pinnum" text-anchor="start">17</text>
+<polyline points="1226,221 1240.0,221" class="w"/>
+<polyline points="1272.0,221 1286,221" class="w"/>
+<rect x="1240.0" y="215" width="32" height="12" class="part"/>
+<text x="1256.0" y="210" class="val" text-anchor="middle">R3 47Ω</text>
+<polyline points="1286,221 1296,221" class="w"/>
+<circle cx="1301" cy="221" r="5" class="conn"/>
+<text x="1312" y="225" class="lbl" text-anchor="start">trás esq. (23)</text>
+<polyline points="1200,257 1226,257" class="w"/>
+<text x="1194" y="261" class="pinn" text-anchor="end">B3</text>
+<text x="1204" y="253" class="pinnum" text-anchor="start">16</text>
+<polyline points="1226,257 1240.0,257" class="w"/>
+<polyline points="1272.0,257 1286,257" class="w"/>
+<rect x="1240.0" y="251" width="32" height="12" class="part"/>
+<text x="1256.0" y="246" class="val" text-anchor="middle">R4 47Ω</text>
+<polyline points="1286,257 1296,257" class="w"/>
+<circle cx="1301" cy="257" r="5" class="conn"/>
+<text x="1312" y="261" class="lbl" text-anchor="start">trás dir. (23)</text>
+<polyline points="1200,293 1226,293" class="w"/>
+<text x="1194" y="297" class="pinn" text-anchor="end">B4</text>
+<text x="1204" y="289" class="pinnum" text-anchor="start">15</text>
+<polyline points="1226,293 1240.0,293" class="w"/>
+<polyline points="1272.0,293 1286,293" class="w"/>
+<rect x="1240.0" y="287" width="32" height="12" class="part"/>
+<text x="1256.0" y="282" class="val" text-anchor="middle">R5 47Ω</text>
+<polyline points="1286,293 1296,293" class="w"/>
+<circle cx="1301" cy="293" r="5" class="conn"/>
+<text x="1312" y="297" class="lbl" text-anchor="start">farol esq. (16)</text>
+<polyline points="1200,329 1226,329" class="w"/>
+<text x="1194" y="333" class="pinn" text-anchor="end">B5</text>
+<text x="1204" y="325" class="pinnum" text-anchor="start">14</text>
+<polyline points="1226,329 1240.0,329" class="w"/>
+<polyline points="1272.0,329 1286,329" class="w"/>
+<rect x="1240.0" y="323" width="32" height="12" class="part"/>
+<text x="1256.0" y="318" class="val" text-anchor="middle">R6 47Ω</text>
+<polyline points="1286,329 1296,329" class="w"/>
+<circle cx="1301" cy="329" r="5" class="conn"/>
+<text x="1312" y="333" class="lbl" text-anchor="start">farol dir. (16)</text>
+<polyline points="1200,365 1226,365" class="w"/>
+<text x="1194" y="369" class="pinn" text-anchor="end">B6</text>
+<text x="1204" y="361" class="pinnum" text-anchor="start">13</text>
+<text x="1232" y="369" class="note" text-anchor="start">livre</text>
+<polyline points="1200,401 1226,401" class="w"/>
+<text x="1194" y="405" class="pinn" text-anchor="end">B7</text>
+<text x="1204" y="397" class="pinnum" text-anchor="start">12</text>
+<text x="1232" y="405" class="note" text-anchor="start">livre</text>
+<polyline points="1200,437 1226,437" class="w"/>
+<text x="1194" y="441" class="pinn" text-anchor="end">B8</text>
+<text x="1204" y="433" class="pinnum" text-anchor="start">11</text>
+<text x="1232" y="441" class="note" text-anchor="start">livre</text>
+<text x="950" y="600" class="note" text-anchor="start">Cada fita: só o fio de DATA vem para cá (o ○ é o conector), passando pelo resistor.</text>
+<text x="950" y="620" class="note" text-anchor="start">O +5V e o GND das fitas continuam vindo da roda; o GND desta placa é o mesmo.</text>
+<text x="950" y="640" class="note" text-anchor="start">Teste feito com 3,3 V direto também funcionou: o 245 é a garantia.</text>
+<rect x="20" y="680" width="1420" height="405" class="frame"/>
+<text x="32" y="702" class="sec" text-anchor="start">SOM PELO AMPLIFICADOR DA RODA (placa do display, U8 = CS8618)</text>
+<rect x="330" y="730" width="150" height="300" rx="3" class="blk"/>
+<text x="405.0" y="720" class="ttl" text-anchor="middle">U3 PCM5102A</text>
+<text x="405.0" y="1048" class="sub" text-anchor="middle">módulo I2S → linha</text>
+<polyline points="304,755 330,755" class="w"/>
+<text x="336" y="759" class="pinn" text-anchor="start">VIN</text>
+<g class="net " data-net="+5V"><polygon points="263.2,745 296,745 304,755 296,765 263.2,765"/>
+<text x="270.2" y="759.5" class="netn" text-anchor="start">+5V</text>
+</g>
+<polyline points="304,786 330,786" class="w"/>
+<text x="336" y="790" class="pinn" text-anchor="start">GND</text>
+<polyline points="304,786 292,786 292,792" class="w"/>
+<polyline points="292,792 292,802" class="w"/>
+<g class="gndsym"><line x1="281" y1="802" x2="303" y2="802"/><line x1="285" y1="807" x2="299" y2="807"/><line x1="289" y1="812" x2="295" y2="812"/></g>
+<polyline points="304,817 330,817" class="w"/>
+<text x="336" y="821" class="pinn" text-anchor="start">BCK</text>
+<g class="net " data-net="I2S_BCK"><polygon points="232.8,807 296,807 304,817 296,827 232.8,827"/>
+<text x="239.8" y="821.5" class="netn" text-anchor="start">I2S_BCK</text>
+</g>
+<polyline points="304,848 330,848" class="w"/>
+<text x="336" y="852" class="pinn" text-anchor="start">LCK</text>
+<g class="net " data-net="I2S_LCK"><polygon points="232.8,838 296,838 304,848 296,858 232.8,858"/>
+<text x="239.8" y="852.5" class="netn" text-anchor="start">I2S_LCK</text>
+</g>
+<polyline points="304,879 330,879" class="w"/>
+<text x="336" y="883" class="pinn" text-anchor="start">DIN</text>
+<g class="net " data-net="I2S_DIN"><polygon points="232.8,869 296,869 304,879 296,889 232.8,889"/>
+<text x="239.8" y="883.5" class="netn" text-anchor="start">I2S_DIN</text>
+</g>
+<polyline points="304,910 330,910" class="w"/>
+<text x="336" y="914" class="pinn" text-anchor="start">SCK</text>
+<polyline points="304,910 292,910 292,916" class="w"/>
+<polyline points="292,916 292,926" class="w"/>
+<g class="gndsym"><line x1="281" y1="926" x2="303" y2="926"/><line x1="285" y1="931" x2="299" y2="931"/><line x1="289" y1="936" x2="295" y2="936"/></g>
+<polyline points="304,941 330,941" class="w"/>
+<text x="336" y="945" class="pinn" text-anchor="start">FMT</text>
+<polyline points="304,941 292,941 292,947" class="w"/>
+<polyline points="292,947 292,957" class="w"/>
+<g class="gndsym"><line x1="281" y1="957" x2="303" y2="957"/><line x1="285" y1="962" x2="299" y2="962"/><line x1="289" y1="967" x2="295" y2="967"/></g>
+<polyline points="304,972 330,972" class="w"/>
+<text x="336" y="976" class="pinn" text-anchor="start">XSMT</text>
+<g class="net " data-net="3V3"><polygon points="263.2,962 296,962 304,972 296,982 263.2,982"/>
+<text x="270.2" y="976.5" class="netn" text-anchor="start">3V3</text>
+</g>
+<polyline points="304,1003 330,1003" class="w"/>
+<text x="336" y="1007" class="pinn" text-anchor="start">FLT/DEMP</text>
+<polyline points="304,1003 292,1003 292,1009" class="w"/>
+<polyline points="292,1009 292,1019" class="w"/>
+<g class="gndsym"><line x1="281" y1="1019" x2="303" y2="1019"/><line x1="285" y1="1024" x2="299" y2="1024"/><line x1="289" y1="1029" x2="295" y2="1029"/></g>
+<text x="40" y="1068" class="note" text-anchor="start">SCK, FMT, FLT e DEMP no GND; XSMT no 3V3 (sem isso o DAC fica mudo). Muitos módulos já trazem jumpers de solda pra isso.</text>
+<polyline points="480,790 506,790" class="w"/>
+<text x="474" y="794" class="pinn" text-anchor="end">LOUT</text>
+<polyline points="480,860 506,860" class="w"/>
+<text x="474" y="864" class="pinn" text-anchor="end">ROUT</text>
+<polyline points="480,930 506,930" class="w"/>
+<text x="474" y="934" class="pinn" text-anchor="end">AGND</text>
+<rect x="890" y="730" width="170" height="290" rx="3" class="blk"/>
+<text x="975.0" y="720" class="ttl" text-anchor="middle">U8 CS8618 (amplificador da roda)</text>
+<polyline points="864,790 890,790" class="w"/>
+<text x="896" y="794" class="pinn" text-anchor="start">LINN</text>
+<text x="886" y="786" class="pinnum" text-anchor="end">4</text>
+<polyline points="864,860 890,860" class="w"/>
+<text x="896" y="864" class="pinn" text-anchor="start">RINN</text>
+<text x="886" y="856" class="pinnum" text-anchor="end">11</text>
+<polyline points="864,990 890,990" class="w"/>
+<text x="896" y="994" class="pinn" text-anchor="start">SD</text>
+<text x="886" y="986" class="pinnum" text-anchor="end">1</text>
+<polyline points="864,760 890,760" class="w"/>
+<text x="896" y="764" class="pinn" text-anchor="start">LINP</text>
+<text x="886" y="756" class="pinnum" text-anchor="end">3</text>
+<polyline points="864,890 890,890" class="w"/>
+<text x="896" y="894" class="pinn" text-anchor="start">RINP</text>
+<text x="886" y="886" class="pinnum" text-anchor="end">12</text>
+<text x="860" y="752" class="note" text-anchor="end">áudio da roda (C58) — não mexer</text>
+<text x="860" y="906" class="note" text-anchor="end">áudio da roda (C61) — não mexer</text>
+<polyline points="506,790 640,790" class="w"/>
+<polyline points="640,790 666.0,790" class="w"/>
+<polyline points="674.0,790 700,790" class="w"/>
+<line x1="666.0" y1="779" x2="666.0" y2="801" class="plate"/><line x1="674.0" y1="779" x2="674.0" y2="801" class="plate"/>
+<text x="670.0" y="774" class="val" text-anchor="middle">C59 </text>
+<polyline points="700,790 724.0,790" class="w"/>
+<polyline points="756.0,790 780,790" class="w"/>
+<rect x="724.0" y="784" width="32" height="12" class="part"/>
+<text x="740.0" y="779" class="val" text-anchor="middle">R54 2k2</text>
+<polyline points="780,790 864,790" class="w"/>
+<polyline points="640,790 640,812" class="cut"/>
+<line x1="632" y1="804" x2="648" y2="816" class="x"/><line x1="648" y1="804" x2="632" y2="816" class="x"/>
+<polyline points="506,860 640,860" class="w"/>
+<polyline points="640,860 666.0,860" class="w"/>
+<polyline points="674.0,860 700,860" class="w"/>
+<line x1="666.0" y1="849" x2="666.0" y2="871" class="plate"/><line x1="674.0" y1="849" x2="674.0" y2="871" class="plate"/>
+<text x="670.0" y="844" class="val" text-anchor="middle">C60 </text>
+<polyline points="700,860 724.0,860" class="w"/>
+<polyline points="756.0,860 780,860" class="w"/>
+<rect x="724.0" y="854" width="32" height="12" class="part"/>
+<text x="740.0" y="849" class="val" text-anchor="middle">R55 2k2</text>
+<polyline points="780,860 864,860" class="w"/>
+<polyline points="640,860 640,882" class="cut"/>
+<line x1="632" y1="874" x2="648" y2="886" class="x"/><line x1="648" y1="874" x2="632" y2="886" class="x"/>
+<text x="632" y="822" class="note" text-anchor="end">soltar do GND a ponta</text>
+<text x="632" y="838" class="note" text-anchor="end">de fora de C59 e C60</text>
+<polyline points="506,930 560,930 560,936" class="w"/>
+<polyline points="560,936 560,946" class="w"/>
+<g class="gndsym"><line x1="549" y1="946" x2="571" y2="946"/><line x1="553" y1="951" x2="567" y2="951"/><line x1="557" y1="956" x2="563" y2="956"/></g>
+<text x="578" y="950" class="note" text-anchor="start">GND: pads antigos de C59/C60</text>
+<g class="net " data-net="AMP_EN"><polygon points="636.4,980 692,980 700,990 692,1000 636.4,1000"/>
+<text x="643.4" y="994.5" class="netn" text-anchor="start">AMP_EN</text>
+</g>
+<polyline points="700,990 741.0,990" class="w"/>
+<polyline points="759.0,990 800,990" class="w"/>
+<polygon points="741.0,981 741.0,999 758.0,990" class="part"/><line x1="759.0" y1="981" x2="759.0" y2="999" class="plate"/>
+<text x="750.0" y="976" class="val" text-anchor="middle">D2 1N4148</text>
+<polyline points="800,990 864,990" class="w"/>
+<text x="750" y="1012" class="note" text-anchor="middle">faixa no pad do R52 do lado do pino 1</text>
+<text x="600" y="1040" class="note" text-anchor="start">O SD já é controlado pela roda por ~1 kΩ (provável R51): o diodo só liga por cima.</text>
+<rect x="1080" y="730" width="345" height="88" rx="4" class="warn"/>
+<text x="1094" y="756" class="warnt" text-anchor="start">⚠ R52 (vazio): só o pad do pino 1 serve.</text>
+<text x="1094" y="778" class="warnt" text-anchor="start">O OUTRO pad do R52 tem 13,8 V (PVCC):</text>
+<text x="1094" y="800" class="warnt" text-anchor="start">nunca ligar no C3.</text>
+<rect x="1080" y="840" width="345" height="190" rx="4" class="alt"/>
+<text x="1094" y="864" class="altt" text-anchor="start">Alternativa sem o PCM5102A (sigma-delta)</text>
+<text x="1094" y="890" class="lbl" text-anchor="start">GPIO0 →</text>
+<polyline points="1150,905 1164.0,905" class="w"/>
+<polyline points="1196.0,905 1210,905" class="w"/>
+<rect x="1164.0" y="899" width="32" height="12" class="part"/>
+<text x="1180.0" y="894" class="val" text-anchor="middle">R7 1k</text>
+<polyline points="1144,905 1150,905" class="w"/>
+<circle cx="1210" cy="905" r="3.2" class="dot"/>
+<polyline points="1210,905 1210,928.5" class="w"/>
+<polyline points="1210,936.5 1210,960" class="w"/>
+<line x1="1199" y1="928.5" x2="1221" y2="928.5" class="plate"/>
+<line x1="1199" y1="936.5" x2="1221" y2="936.5" class="plate"/>
+<text x="1226" y="936.5" class="val" text-anchor="start"> </text>
+<polyline points="1210,960 1210,970" class="w"/>
+<g class="gndsym"><line x1="1199" y1="970" x2="1221" y2="970"/><line x1="1203" y1="975" x2="1217" y2="975"/><line x1="1207" y1="980" x2="1213" y2="980"/></g>
+<text x="1228" y="940" class="val" text-anchor="start">10nF</text>
+<polyline points="1210,905 1224.0,905" class="w"/>
+<polyline points="1256.0,905 1270,905" class="w"/>
+<rect x="1224.0" y="899" width="32" height="12" class="part"/>
+<text x="1240.0" y="894" class="val" text-anchor="middle">R8 1k</text>
+<circle cx="1270" cy="905" r="3.2" class="dot"/>
+<polyline points="1270,905 1270,928.5" class="w"/>
+<polyline points="1270,936.5 1270,960" class="w"/>
+<line x1="1259" y1="928.5" x2="1281" y2="928.5" class="plate"/>
+<line x1="1259" y1="936.5" x2="1281" y2="936.5" class="plate"/>
+<text x="1286" y="936.5" class="val" text-anchor="start"> </text>
+<polyline points="1270,960 1270,970" class="w"/>
+<g class="gndsym"><line x1="1259" y1="970" x2="1281" y2="970"/><line x1="1263" y1="975" x2="1277" y2="975"/><line x1="1267" y1="980" x2="1273" y2="980"/></g>
+<text x="1288" y="940" class="val" text-anchor="start">10nF</text>
+<polyline points="1270,905 1296.0,905" class="w"/>
+<polyline points="1304.0,905 1330,905" class="w"/>
+<line x1="1296.0" y1="894" x2="1296.0" y2="916" class="plate"/><line x1="1304.0" y1="894" x2="1304.0" y2="916" class="plate"/>
+<text x="1300.0" y="889" class="val" text-anchor="middle">C6 1µF</text>
+<polyline points="1330,905 1345,905" class="w"/>
+<text x="1350" y="909" class="lbl" text-anchor="start">C59+C60</text>
+<text x="1094" y="1010" class="note" text-anchor="start">Mono, 1 pino só: libera GPIO2 e GPIO21.</text>
+</svg>  </div>
+
+  <div class="grade">
+    <section class="cartao">
+      <h2>Ligações, fio por fio</h2>
+      <div class="tab">
+      <table>
+        <thead><tr><th>Rede</th><th>Liga</th></tr></thead>
+        <tbody>
+          <tr data-net="+5V"><td class="rede">+5V</td><td>+5VA da roda → D1 (1N4007) → C1 470µF · C2 100nF · C3 <code>5V</code> · R1 10Ω (TX) · 245 pinos 20 (VCC) e 1 (DIR) · C5 100nF · PCM5102A <code>VIN</code></td></tr>
+          <tr data-net="GND"><td class="rede">GND</td><td>GND1 da roda · C3 <code>GND</code> · TX e RX <code>GND</code> · C1, C2, C3, C5 · 245 pinos 10, 19 (OE) e 7, 8, 9 (A6–A8) · PCM5102A <code>GND SCK FMT FLT DEMP</code></td></tr>
+          <tr data-net="3V3"><td class="rede">3V3</td><td>C3 <code>3V3</code> · RX <code>VCC</code> e <code>CS</code> · PCM5102A <code>XSMT</code></td></tr>
+          <tr data-net="TX433"><td class="rede">TX433</td><td>GPIO3 → TX STX882 <code>DATA</code> (TX alimentado pelo filtro R1 10Ω + C3 220µF)</td></tr>
+          <tr data-net="RX433"><td class="rede">RX433</td><td>RX SRX882S <code>DATA</code> → GPIO4</td></tr>
+          <tr data-net="LED_TOPO"><td class="rede">LED_TOPO</td><td>GPIO5 → 245 pino 2 (A1) · pino 18 (B1) → R2 47Ω → DATA da fita do topo (64 px)</td></tr>
+          <tr data-net="LED_TRAS_E"><td class="rede">LED_TRAS_E</td><td>GPIO6 → 245 pino 3 (A2) · pino 17 (B2) → R3 47Ω → DATA traseira esquerda (23)</td></tr>
+          <tr data-net="LED_TRAS_D"><td class="rede">LED_TRAS_D</td><td>GPIO7 → 245 pino 4 (A3) · pino 16 (B3) → R4 47Ω → DATA traseira direita (23)</td></tr>
+          <tr data-net="LED_FAROL_E"><td class="rede">LED_FAROL_E</td><td>GPIO10 → 245 pino 5 (A4) · pino 15 (B4) → R5 47Ω → DATA farol esquerdo (16)</td></tr>
+          <tr data-net="LED_FAROL_D"><td class="rede">LED_FAROL_D</td><td>GPIO20 → 245 pino 6 (A5) · pino 14 (B5) → R6 47Ω → DATA farol direito (16)</td></tr>
+          <tr data-net="I2S_BCK"><td class="rede">I2S_BCK</td><td>GPIO0 → PCM5102A <code>BCK</code></td></tr>
+          <tr data-net="I2S_LCK"><td class="rede">I2S_LCK</td><td>GPIO2 → PCM5102A <code>LCK</code></td></tr>
+          <tr data-net="I2S_DIN"><td class="rede">I2S_DIN</td><td>GPIO21 → PCM5102A <code>DIN</code></td></tr>
+          <tr data-net="AMP_EN"><td class="rede">AMP_EN</td><td>GPIO1 → D2 1N4148 (anodo) · catodo → pad do R52 do lado do pino 1 (SD) do CS8618</td></tr>
+          <tr><td class="rede">ÁUDIO</td><td>PCM5102A <code>LOUT</code> → ponta solta do C59 · <code>ROUT</code> → ponta solta do C60 · <code>AGND</code> → pads antigos de GND do C59/C60 (três fios juntos, de preferência trançados)</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </section>
+
+    <div style="display:grid; gap:22px; min-width:0">
+      <section class="cartao">
+        <h2>Peças (tudo de furo)</h2>
+        <div class="tab">
+        <table>
+          <thead><tr><th>Ref.</th><th>Peça</th></tr></thead>
+          <tbody>
+            <tr><td class="rede">U1</td><td>ESP32-C3 SuperMini, por barra de pinos 2×8</td></tr>
+            <tr><td class="rede">U2</td><td>SN74HCT245N (DIP-20)</td></tr>
+            <tr><td class="rede">U3</td><td>Módulo PCM5102A (ou a alternativa sigma-delta: R7, R8, 2×10nF, C6)</td></tr>
+            <tr><td class="rede">TX / RX</td><td>STX882 e SRX882S, com antenas de 17,3 cm</td></tr>
+            <tr><td class="rede">D1</td><td>1N4007 (um 1N5819 Schottky perde menos tensão)</td></tr>
+            <tr><td class="rede">D2</td><td>1N4148 (ou BAT43)</td></tr>
+            <tr><td class="rede">C1 / C2</td><td>470µF 16–25 V eletrolítico / 100nF cerâmico</td></tr>
+            <tr><td class="rede">C3</td><td>220µF 10–16 V eletrolítico (filtro do TX)</td></tr>
+            <tr><td class="rede">C5</td><td>100nF cerâmico, colado no pino 20 do 245</td></tr>
+            <tr><td class="rede">R1</td><td>10Ω</td></tr>
+            <tr><td class="rede">R2–R6</td><td>47Ω (qualquer um de 33 a 100Ω)</td></tr>
+            <tr><td class="rede">Conectores</td><td>Entrada 5 V (2 vias) · fitas (5× DATA + GND) · áudio para a placa do display (LOUT, ROUT, AGND, SD)</td></tr>
+          </tbody>
+        </table>
+        </div>
+      </section>
+
+      <section class="cartao avisos">
+        <h2>Cuidados</h2>
+        <ul>
+          <li>O <strong>outro pad do R52</strong> tem 13,8 V. Só o lado ligado ao pino 1 (SD) recebe o diodo.</li>
+          <li><strong>GPIO2</strong> é pino de boot: serve como clock do DAC, mas nunca no diodo do amplificador.</li>
+          <li>O <strong>PCM5102A</strong> tem que estar sempre alimentado com a roda ligada; sem ele, o lado N do amplificador fica solto.</li>
+          <li>Entradas A6–A8 do 245 vão no GND: entrada de CMOS solta oscila e esquenta.</li>
+          <li>O USB-C do C3 continua no mesmo lugar, apontando para fora da tampa.</li>
+        </ul>
+      </section>
+    </div>
+  </div>
+
+  <section class="cartao">
+    <h2>Dicas para a placa feita em casa</h2>
+    <ul>
+      <li><strong>Uma face só</strong> de cobre, componentes do outro lado. Se uma trilha não passar, um jumper de fio por cima resolve.</li>
+      <li>Trilhas de sinal com <strong>0,6 mm</strong> ou mais, +5V e GND com <strong>1 mm</strong> ou mais, folga de 0,4 mm entre elas e ilhas de 1,8–2 mm. Com passo de 2,54 mm a laser de 10 W dá conta.</li>
+      <li>Encha a sobra de cobre com uma área ligada ao <strong>GND</strong>: gasta menos ácido e reduz ruído.</li>
+      <li>Método da tinta: spray preto fosco no cobre, laser remove a tinta onde o cobre deve sair, percloreto de ferro. Teste antes com uma placa pequena de trilhas de largura crescente.</li>
+      <li>No KiCad, a face de cobre exportada para o laser é vista <strong>por baixo</strong>: imprima em papel e confira encaixando o C3 e o 245 antes de queimar a placa.</li>
+      <li>Furos com a CNC router: broca de 0,8 mm para os pinos e 1 mm para conectores e diodos.</li>
+      <li>Organize por zonas: <strong>áudio</strong> (PCM5102A e saída para o amplificador) num canto, longe do <strong>TX 433</strong> e das saídas das fitas.</li>
+      <li>Se a altura deixar, o C3 em barra de pinos alta pode ficar <strong>por cima do 245</strong>, economizando área.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+(() => {
+  const marcar = (nome, on) => {
+    document.querySelectorAll('[data-net]').forEach(el => {
+      if (el.dataset.net === nome) el.classList.toggle('on', on);
+    });
+  };
+  let fixo = null;
+  document.querySelectorAll('[data-net]').forEach(el => {
+    el.addEventListener('mouseenter', () => { if (!fixo) marcar(el.dataset.net, true); });
+    el.addEventListener('mouseleave', () => { if (!fixo) marcar(el.dataset.net, false); });
+    el.addEventListener('click', () => {
+      const n = el.dataset.net;
+      if (fixo) marcar(fixo, false);
+      fixo = (fixo === n) ? null : n;
+      if (fixo) marcar(fixo, true);
+    });
+  });
+})();
+</script>
+</body>
+</html>
