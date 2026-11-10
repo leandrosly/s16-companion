@@ -1,0 +1,3 @@
+(sym_lib_table
+  (lib (name "S16")(type "KiCad")(uri "${KIPRJMOD}/S16.kicad_sym")(options "")(descr "Pecas do S16 Companion"))
+)
