@@ -1,2 +1,5 @@
 ks_s16_ponte_v4_s3/build/
 tmp/
+.history/
+*.lck
+*-backups/
