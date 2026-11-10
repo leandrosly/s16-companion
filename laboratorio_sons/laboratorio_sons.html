@@ -208,9 +208,11 @@ const MOTORES = {
   tron: { nome: 'Elétrico Tron', sub: 'moto de luz', tipo: 'tron', un: '%', max: 100,
     desc: 'Duas ondas dente de serra <em>quase na mesma nota</em> (o batimento entre elas dá o brilho) e uma quadrada uma oitava abaixo, num filtro que abre com a velocidade. Sem marchas: o tom segue a velocidade direto.' },
   vess: { nome: 'Elétrico VESS', sub: 'carro elétrico', tipo: 'vess', un: '%', max: 100,
-    desc: 'Medido no som de rua de um carro elétrico (Hyundai Kona): <em>14 tons puros</em> formando um acorde (fundamental, terça, quinta, oitava...). Andando, todos sobem juntos na mesma proporção, como um teclado transpondo o acorde: no arranque gravado foi cerca de 30%. Acelerando o som fica mais brilhante, e com a velocidade entra um ruído de rolagem.' },
+    desc: 'Medido momento a momento na gravação do Hyundai Kona. Parado, é um acorde de tons puros; ao sair do lugar entram tons novos (um grave <em>gordo</em> de ~150 Hz, 199 Hz e agudos de 1,3 e 1,6 kHz), e todos sobem juntos, devagar no começo. Cada tom são 3 osciladores levemente desafinados (o batimento que dá a leve dissonância), a intensidade oscila devagar, o grave tem uma "marcha" perto dos 17 km/h e entra um apito fraquinho que sobe rápido. Com a velocidade cresce um ruído de rolagem mais grave, e na velocidade alta os tons quase somem nele.' },
   nave: { nome: 'Nave', sub: 'hover espacial', tipo: 'nave', un: '%', max: 100,
     desc: 'Um zumbido grave de duas notas que oscila devagar, ar passando (ruído que sobe com a velocidade) e um <em>propulsor</em> que só aparece quando você acelera. Tudo com eco.' },
+  voador: { nome: 'Carro voador', sub: 'desenho animado retrô', tipo: 'voador', un: '%', max: 100,
+    desc: 'Um tom puro que <em>borbulha</em>: o volume pulsa rápido (o "pó-pó-pó" de desenho antigo) e a nota balança num vibrato. Acelerar sobe a nota e apressa as pulsadas; um segundo tom uma quinta acima entra com a carga, mais um sopro de ar e um eco curtinho.' },
   arquivo: { nome: 'Arquivo de áudio', sub: 'sua gravação', tipo: 'arquivo', un: 'rpm',
     idle: 900, max: 6000, red: 5200, gears: [260, 132, 75, 58], up: 4600, down: 1900, loadRpm: 700,
     desc: 'Toca o seu loop <em>mais rápido ou mais devagar</em> conforme a rotação, como os jogos antigos de corrida. Mais rápido fica mais agudo e acelerado. Carregue o arquivo no quadro "Gravação própria".' },
@@ -376,37 +378,137 @@ function motorTron() {
   };
 }
 
-// ----- Eletrico VESS: acorde de senoides medido no som de um carro eletrico (Hyundai Kona) -----
-// Parado, os tons ficam nestas frequencias; andando, TODOS sobem na mesma proporcao (~+30% no
-// arranque gravado), como um teclado transpondo o acorde. Com a velocidade entra um ruido de rolagem.
-const VESS_TONS = [   // Hz parado, volume relativo (do espectro da gravacao)
-  [145, .40], [194, .25], [217, .13], [258, .25], [348, .63], [438, .32], [517, 1],
-  [650, .50], [696, .14], [770, .63], [869, .14], [1043, .20], [1300, .18], [1552, .11]
+// ----- Eletrico VESS (v2): modelo medido na gravacao do Hyundai Kona, momento a momento -----
+// O que a gravacao mostrou (e este modelo reproduz):
+//  * parado: um acorde de tons puros (350, 436, 527, 654, 786 Hz... os mais fortes)
+//  * ao sair do lugar entram tons novos: um grave "gordo" (~150 Hz), 199 Hz, ~100 Hz e os agudos 1335/1566 Hz
+//  * todos sobem juntos com a velocidade, mas devagar no comeco: fator k = 1 + 0,33*(v/30)^1,5 (+33% a 30 km/h)
+//  * o grave de ~150 Hz tem uma "marcha": sobe ate ~17 km/h e volta 1/1,125 pra baixo
+//  * cada tom e 3 osciladores levemente desafinados (1,5 a 4,5 Hz): da o batimento e a leve dissonancia
+//  * a intensidade oscila devagar (~0,45 Hz)
+//  * ruido de rolagem marrom (grave) + rosa (preenche entre os tons) que cresce com a velocidade;
+//    na velocidade alta os tons quase somem no ruido; um chiado suave em 8,5-11 kHz
+//  * um "apito" fraquinho de 3 linhas que sobe rapido (1,3 kHz + 260 Hz por km/h) e some depois de ~20 km/h
+const VESS_V = [0, 1.8, 6.9, 12.3, 21, 24.3, 29.8, 45];        // km/h dos pontos medidos
+const VESS_TONS2 = [   // [Hz parado, dB em cada ponto de VESS_V (-99 = desligado), marcha?]
+  [98.0,   [-99, -99, -14, -5, 6, 8, 2, -6]],
+  [150.7,  [-99, -7, 4, 13, 15, 15, -12, -30], true],
+  [172.3,  [-23, -17, -20, -14, -7, -3, -9, -15]],
+  [199.0,  [-99, -11, -2, 2, 6, 7, -5, -12]],
+  [218.0,  [-14, -18, -9, -8, -4, -9, -5, -12]],
+  [261.1,  [-16, -13, -12, -9, -4, -3, -9, -15]],
+  [349.9,  [-3, -1, -6, 5, 5, 6, -11, -18]],
+  [395.7,  [-27, -28, -22, -15, -8, -5, -11, -18]],
+  [436.0,  [-9, -13, -10, -11, -1, -6, -9, -15]],
+  [527.6,  [0, 2, 2, 3, 3, 10, -6, -12]],
+  [654.1,  [-7, -6, -4, -6, 8, 1, -9, -15]],
+  [697.1,  [-11, -17, -9, 3, 2, -2, -13, -20]],
+  [786.0,  [-5, -4, -5, -11, -6, -5, -12, -18]],
+  [877.5,  [-17, -15, -6, -22, -10, -10, -17, -24]],
+  [1044.4, [-25, -20, -10, -6, 1, -1, -17, -24]],
+  [1335.0, [-99, -21, -17, -6, -2, 2, -10, -18]],
+  [1566.5, [-99, -14, -14, -6, -9, -6, -27, -30]],
 ];
+const VESS_MARROM = [-30, -18, -10, 1, 5, 6, 13, 15];
+const VESS_ROSA   = [-43, -37, -28, -27, -25, -23, -13, -10];
+const VESS_CHIADO = [-55, -46, -36, -30, -27, -25, -21, -19];
+const VESS_APITO  = [-99, -36, -31, -34, -46, -99, -99, -99];
+function vessInterp(tab, v) {
+  const x = Math.min(v, VESS_V[VESS_V.length - 1]);
+  for (let i = 1; i < VESS_V.length; i++) {
+    if (x <= VESS_V[i]) { const r = (x - VESS_V[i - 1]) / (VESS_V[i] - VESS_V[i - 1]); return tab[i - 1] + (tab[i] - tab[i - 1]) * r; }
+  }
+  return tab[tab.length - 1];
+}
+const dbLin = db => db <= -90 ? 0 : Math.pow(10, db / 20);
+// ruidos com desvio ~1 (gerados uma vez)
+function bufRuido(tipo) {
+  const sr = ctx.sampleRate, n = sr * 4, b = ctx.createBuffer(1, n, sr), d = b.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, m = 0, soma = 0;
+  for (let i = 0; i < n; i++) {
+    const w = (Math.random() + Math.random() + Math.random() - 1.5) * 2;      // quase gaussiano
+    let y = w;
+    if (tipo === 'marrom') { m = 0.995 * m + w; y = m; }
+    else if (tipo === 'rosa') {                                               // filtro de Paul Kellet
+      b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.96900 * b2 + w * 0.1538520;
+      b3 = 0.86650 * b3 + w * 0.3104856; b4 = 0.55000 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.0168980;
+      y = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362; b6 = w * 0.115926;
+    }
+    d[i] = y; soma += y * y;
+  }
+  const k = 1 / Math.sqrt(soma / n);
+  for (let i = 0; i < n; i++) d[i] *= k;
+  return b;
+}
 function motorVess() {
-  const out = saida(0.7);
-  const mix = ganho(0.11), brilho = filtro('highshelf', 900); brilho.gain.value = 0;
-  mix.connect(brilho); brilho.connect(out);
-  const oscs = VESS_TONS.map(([f, a]) => {
-    const o = osc('sine', f), g = ganho(a);
-    o.connect(g); g.connect(mix); o.start();
-    return { o, f };
+  if (!BUF.vMarrom) { BUF.vMarrom = bufRuido('marrom'); BUF.vRosa = bufRuido('rosa'); BUF.vBranco = bufRuido('branco'); }
+  const out = saida(0.03);                       // o modelo soma ~5 parado e ~27 a 30 km/h
+  const brilho = filtro('highshelf', 900); brilho.gain.value = 0;
+  const mix = ganho(1); mix.connect(brilho); brilho.connect(out);
+  // oscilacao lenta da intensidade (~0,45 Hz, +-10%)
+  const lfo = osc('sine', 0.45), gLfo = ganho(0.1); lfo.connect(gLfo); gLfo.connect(mix.gain); lfo.start();
+  const fontes = [lfo];
+  // estereo: cada fonte passa por um panner (o resto da cadeia ja e estereo)
+  const pan = (no, p) => { const pn = ctx.createStereoPanner(); pn.pan.value = p; no.connect(pn); return pn; };
+  const tons = VESS_TONS2.map(([f0, tab, marcha]) => {
+    const g = ganho(0); g.connect(mix);
+    // voz principal no centro, as duas desafinadas uma de cada lado: o batimento "passeia" entre os canais
+    const vozes = [[0, 1, 0], [1.5 + Math.random() * 3, 0.55, -0.75], [-(1.5 + Math.random() * 3), 0.35, 0.75]].map(([off, amp, p]) => {
+      const o = osc('sine', f0 + off), ga = ganho(amp); o.connect(ga); pan(ga, p).connect(g); o.start(); fontes.push(o);
+      return { o, off };
+    });
+    return { f0, tab, marcha, g, vozes };
   });
-  const vib = osc('sine', 0.35), gVib = ganho(1.2);        // vibrato bem leve, so pra nao ficar "parado"
-  vib.connect(gVib); oscs.forEach(x => gVib.connect(x.o.detune)); vib.start();
-  const nz = ruidoLoop(), bp = filtro('bandpass', 700, 0.6), gN = ganho(0);
-  nz.connect(bp); bp.connect(gN); gN.connect(out); nz.start();
+  // ruido estereo de verdade: duas copias do mesmo buffer com inicio diferente (>1 s de distancia =
+  // sem correlacao), cada uma com seus filtros, uma em cada canal
+  const ruido = (buf, filtrosFn, ganhoBase, largura) => {
+    const g = ganho(0); g.connect(mix);
+    const ini = Math.random() * 1.5;
+    [[-largura, ini], [largura, ini + 1.8 + Math.random() * 0.5]].forEach(([p, off]) => {
+      const s = ctx.createBufferSource(); s.buffer = buf; s.loop = true; s.start(0, off);
+      let no = s; filtrosFn().forEach(f => { no.connect(f); no = f; });
+      const gb = ganho(ganhoBase); no.connect(gb); pan(gb, p).connect(g); fontes.push(s);
+    });
+    return g;
+  };
+  // Butterworth de 6a ordem = 3 biquads com Q 0.518 / 0.707 / 1.932: faixa com bordas bem retas
+  const bw6 = (tipo, f) => [0.518, 0.707, 1.932].map(q => filtro(tipo, f, q));
+  const gMarrom = ruido(BUF.vMarrom, () => [filtro('lowpass', 1200, 0.5)], 1.2, 0.5);
+  const gRosa = ruido(BUF.vRosa, () => [filtro('highpass', 120), filtro('highpass', 120), filtro('lowpass', 1800), filtro('lowpass', 1800)], 3, 0.9);
+  const gChiado = ruido(BUF.vBranco, () => [...bw6('highpass', 8300), ...bw6('lowpass', 11000)], 3.4, 1);
+  const gApito = ganho(0); gApito.connect(mix);
+  const apitos = [[1, 1, -0.5], [1.12, 0.7, 0.5], [1.26, 0.5, 0]].map(([r, amp, p]) => {
+    const o = osc('sine', 1300 * r), ga = ganho(amp); o.connect(ga); pan(ga, p).connect(gApito); o.start(); fontes.push(o);
+    return { o, r };
+  });
+  let marchaAtual = 1;
   return {
     update(s) {
-      const t = ctx.currentTime, vn = clamp(s.v / 50, 0, 1);
-      const k = 1 + 0.45 * vn + 0.04 * s.load;               // fator que transpoe o acorde
-      oscs.forEach(x => x.o.frequency.setTargetAtTime(x.f * k, t, 0.05));
-      brilho.gain.setTargetAtTime(-4 + 10 * s.load + 3 * vn, t, 0.08);
-      mix.gain.setTargetAtTime(0.09 + 0.05 * s.load + 0.03 * vn, t, 0.08);
-      bp.frequency.setTargetAtTime(500 + vn * 1800, t, 0.1);
-      gN.gain.setTargetAtTime(0.28 * vn * vn, t, 0.1);
+      const t = ctx.currentTime, v = Math.max(0, s.v);
+      const k = 1 + 0.33 * Math.pow(Math.min(v, 45) / 30, 1.5);
+      // intensidades "empurradas pra frente": ate 8 km/h igual; depois o mix que era de 27 km/h fica em 35
+      // (e o de 32 em ~41). As frequencias continuam usando a velocidade real.
+      const vI = v <= 8 ? v : 8 + (v - 8) * (19 / 27);
+      // chiado praticamente zerado parado, aparecendo entre 2 e 6 km/h
+      const fade = Math.pow(Math.min(1, Math.max(0, (v - 2) / 4)), 2);
+      const marchaAlvo = v > 17.6 ? 1 / 1.125 : 1;
+      if (marchaAlvo !== marchaAtual) marchaAtual = marchaAlvo;
+      tons.forEach(tn => {
+        const f = tn.f0 * k;
+        tn.vozes.forEach(vz => {
+          if (tn.marcha) vz.o.frequency.setTargetAtTime((f + vz.off) * marchaAtual, t, 0.12);
+          else vz.o.frequency.setTargetAtTime(f + vz.off, t, 0.05);
+        });
+        tn.g.gain.setTargetAtTime(dbLin(vessInterp(tn.tab, vI)), t, 0.08);
+      });
+      gMarrom.gain.setTargetAtTime(dbLin(vessInterp(VESS_MARROM, vI)), t, 0.1);
+      gRosa.gain.setTargetAtTime(fade * dbLin(vessInterp(VESS_ROSA, vI)), t, 0.1);
+      gChiado.gain.setTargetAtTime(fade * dbLin(vessInterp(VESS_CHIADO, vI)), t, 0.1);
+      gApito.gain.setTargetAtTime(dbLin(vessInterp(VESS_APITO, v)), t, 0.1);
+      apitos.forEach(a => a.o.frequency.setTargetAtTime(Math.min((1300 + 260 * v) * a.r, 15000), t, 0.05));
+      brilho.gain.setTargetAtTime(6 * s.load, t, 0.08);           // acelerando: um pouco mais brilhante
     },
-    parar() { desliga(out, [vib, nz].concat(oscs.map(x => x.o))); }
+    parar() { desliga(out, fontes); }
   };
 }
 
@@ -434,6 +536,41 @@ function motorNave() {
       d2.frequency.setTargetAtTime(82.8 * (1 + s.rpmN * 0.05), t, 0.1);
     },
     parar() { desliga(out, [d1, d2, lfo, nz, th]); }
+  };
+}
+
+// ----- Carro voador (sintese original no estilo dos desenhos retro) -----
+function motorVoador() {
+  const out = saida(0.6);
+  const o1 = osc('sine', 420), o2 = osc('triangle', 630), sub = osc('sine', 210);
+  const vib = osc('sine', 6.5), gVib = ganho(10);                 // vibrato (Hz de desvio)
+  const pul = osc('sine', 9), gPul = ganho(0.45), am = ganho(0.55); // pulsacao do volume
+  const g2 = ganho(0), gSub = ganho(0.25), lp = filtro('lowpass', 2500, 1.2);
+  const nz = ruidoLoop(), hp = filtro('bandpass', 1800, 0.8), gAr = ganho(0);
+  const dl = ctx.createDelay(1), fb = ganho(0.28), wet = ganho(0.25);
+  dl.delayTime.value = 0.11;
+  vib.connect(gVib); gVib.connect(o1.frequency); gVib.connect(o2.frequency);
+  pul.connect(gPul); gPul.connect(am.gain);
+  o1.connect(am); o2.connect(g2); g2.connect(am); sub.connect(gSub); gSub.connect(am);
+  am.connect(lp); lp.connect(out);
+  nz.connect(hp); hp.connect(gAr); gAr.connect(out);
+  lp.connect(dl); dl.connect(fb); fb.connect(dl); dl.connect(wet); wet.connect(out);
+  [o1, o2, sub, vib, pul, nz].forEach(o => o.start());
+  return {
+    update(s) {
+      const t = ctx.currentTime, v = Math.min(s.v, 60);
+      const f = 380 + v * 14 + s.load * 90;                         // a nota sobe com a velocidade
+      o1.frequency.setTargetAtTime(f, t, 0.12);
+      o2.frequency.setTargetAtTime(f * 1.5, t, 0.12);               // quinta acima
+      sub.frequency.setTargetAtTime(f / 2, t, 0.12);
+      gVib.gain.setTargetAtTime(f * 0.025, t, 0.1);
+      vib.frequency.setTargetAtTime(6 + v * 0.06, t, 0.2);
+      pul.frequency.setTargetAtTime(8 + v * 0.22 + s.load * 4, t, 0.15);   // pulsa mais rapido
+      g2.gain.setTargetAtTime(0.08 + s.load * 0.35, t, 0.08);
+      lp.frequency.setTargetAtTime(1800 + v * 60 + s.load * 1500, t, 0.1);
+      gAr.gain.setTargetAtTime(0.01 + s.rpmN * 0.12, t, 0.1);
+    },
+    parar() { desliga(out, [o1, o2, sub, vib, pul, nz]); }
   };
 }
 
@@ -565,6 +702,7 @@ function criaMotor(id, ligando) {
   if (e.tipo === 'tron') return motorTron();
   if (e.tipo === 'vess') return motorVess();
   if (e.tipo === 'nave') return motorNave();
+  if (e.tipo === 'voador') return motorVoador();
   return motorArquivo();
 }
 
