@@ -213,6 +213,8 @@ const MOTORES = {
     desc: 'Um zumbido grave de duas notas que oscila devagar, ar passando (ruído que sobe com a velocidade) e um <em>propulsor</em> que só aparece quando você acelera. Tudo com eco.' },
   voador: { nome: 'Carro voador', sub: 'desenho animado retrô', tipo: 'voador', un: '%', max: 100,
     desc: 'Um tom puro que <em>borbulha</em>: o volume pulsa rápido (o "pó-pó-pó" de desenho antigo) e a nota balança num vibrato. Acelerar sobe a nota e apressa as pulsadas; um segundo tom uma quinta acima entra com a carga, mais um sopro de ar e um eco curtinho.' },
+  jetsons: { nome: 'Carro voador 2', sub: 'no estilo dos Jetsons', tipo: 'jetsons', un: '%', max: 100,
+    desc: 'Montado a partir da análise das gravações: um zumbido grave e áspero (~70 Hz) que <em>tremula</em> umas 22 vezes por segundo, mais um apito com harmônicos que sobe da lenta (~350 Hz) até ~1,5 kHz conforme a velocidade, sempre deslizando devagar, como o motor "pegando giro" do desenho.' },
   arquivo: { nome: 'Arquivo de áudio', sub: 'sua gravação', tipo: 'arquivo', un: 'rpm',
     idle: 900, max: 6000, red: 5200, gears: [260, 132, 75, 58], up: 4600, down: 1900, loadRpm: 700,
     desc: 'Toca o seu loop <em>mais rápido ou mais devagar</em> conforme a rotação, como os jogos antigos de corrida. Mais rápido fica mais agudo e acelerado. Carregue o arquivo no quadro "Gravação própria".' },
@@ -574,6 +576,44 @@ function motorVoador() {
   };
 }
 
+// ----- Carro voador 2: estilo Jetsons (zumbido grave tremulando + apito que desliza) -----
+function motorJetsons() {
+  const out = saida(0.55);
+  // zumbido grave aspero
+  const zb = osc('sawtooth', 70), zlp = filtro('lowpass', 1400, 0.9), zg = ganho(0.30);
+  // apito com harmonicos (1x, 2x, 3x)
+  const ap1 = osc('sawtooth', 350), ap2 = osc('sine', 700), ap3 = osc('sine', 1050);
+  const a1 = ganho(0.10), a2 = ganho(0.10), a3 = ganho(0.07), alp = filtro('lowpass', 5200, 0.7), ag = ganho(0.5);
+  const vib = osc('sine', 6), gv = ganho(4);
+  // tremulacao ~22 Hz (AM) aplicada ao conjunto
+  const trem = osc('sine', 22), gt = ganho(0.35), am = ganho(0.65);
+  // um chiadinho no alto acompanhando a tremulacao
+  const nz = ruidoLoop(), nbp = filtro('bandpass', 4300, 1.5), ng = ganho(0.015);
+  zb.connect(zlp); zlp.connect(zg); zg.connect(am);
+  ap1.connect(a1); ap2.connect(a2); ap3.connect(a3); [a1, a2, a3].forEach(g => g.connect(alp)); alp.connect(ag); ag.connect(am);
+  vib.connect(gv); [ap1, ap2, ap3].forEach(o => gv.connect(o.frequency));
+  trem.connect(gt); gt.connect(am.gain);
+  nz.connect(nbp); nbp.connect(ng); ng.connect(am);
+  am.connect(out);
+  const fontes = [zb, ap1, ap2, ap3, vib, trem, nz];
+  fontes.forEach(o => o.start());
+  let fAp = 200;   // comeca baixo e "pega giro"
+  return {
+    update(s) {
+      const t = ctx.currentTime, v = Math.min(s.v, 45);
+      const alvo = 350 + 1150 * Math.pow(v / 30, 0.8) + s.load * 120;
+      fAp += (alvo - fAp) * Math.min(1, s.dt / 0.7);      // desliza devagar (~0,7 s)
+      ap1.frequency.setTargetAtTime(fAp, t, 0.05); ap2.frequency.setTargetAtTime(fAp * 2, t, 0.05); ap3.frequency.setTargetAtTime(fAp * 3, t, 0.05);
+      gv.gain.setTargetAtTime(fAp * 0.012, t, 0.1);
+      zb.frequency.setTargetAtTime(68 + v * 0.25, t, 0.2);
+      trem.frequency.setTargetAtTime(21 + v * 0.1, t, 0.2);
+      ag.gain.setTargetAtTime(0.35 + 0.25 * Math.min(1, v / 20) + s.load * 0.2, t, 0.1);
+      ng.gain.setTargetAtTime(0.01 + 0.03 * s.rpmN, t, 0.1);
+    },
+    parar() { desliga(out, fontes); }
+  };
+}
+
 function motorArquivo() {
   if (!BUF.arquivo) { $('#arqStatus').textContent = 'carregue um arquivo de áudio primeiro'; return { update() {}, parar() {} }; }
   const out = saida(0.9);
@@ -703,6 +743,7 @@ function criaMotor(id, ligando) {
   if (e.tipo === 'vess') return motorVess();
   if (e.tipo === 'nave') return motorNave();
   if (e.tipo === 'voador') return motorVoador();
+  if (e.tipo === 'jetsons') return motorJetsons();
   return motorArquivo();
 }
 

@@ -1,11 +1,16 @@
 package systems.leandro.s16
 
-// Telas do app (Jetpack Compose): conexao com o C3 no topo e quatro paginas
-// (Roda, Piscas, Fitas, Buzina) que trocam tocando nos botoes ou arrastando para o lado.
+// Telas do app (Jetpack Compose): conexao no topo e as paginas embaixo, que trocam tocando
+// nos botoes ou arrastando para o lado:
+//   com o C3:              Roda, Piscas, Fitas, Buzina, Sons
+//   direto na roda:        Roda, Sons
+//   sem conexao:           Sons (com a simulacao de velocidade)
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -43,6 +48,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -50,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -119,11 +126,18 @@ fun App(
 private fun ColumnScope.Principal(link: C3Link, macSalvo: String?, salvarMac: (String) -> Unit) {
     val con by link.conexao.collectAsState()
     val est by link.estado.collectAsState()
+    val direto by link.direto.collectAsState()
 
-    CartaoConexao(link, con, est, macSalvo, salvarMac)
+    CartaoConexao(link, con, est, direto, macSalvo, salvarMac)
 
-    if ((con == Conexao.CONECTADO && est.recebido) || con == Conexao.DEMO) {
-        val paginas = listOf("Roda", "Piscas", "Fitas", "Buzina")
+    val comC3 = (con == Conexao.CONECTADO && est.recebido) || con == Conexao.DEMO
+    val naRoda = con == Conexao.CONECTADO && direto
+    val paginas = when {
+        comC3 -> listOf("Roda", "Piscas", "Fitas", "Buzina", "Sons")
+        naRoda -> listOf("Roda", "Sons")
+        else -> listOf("Sons")
+    }
+    run {
         val pager = rememberPagerState(pageCount = { paginas.size })
         val escopo = rememberCoroutineScope()
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -143,11 +157,12 @@ private fun ColumnScope.Principal(link: C3Link, macSalvo: String?, salvarMac: (S
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                when (pagina) {
-                    0 -> TelaRoda(link)
-                    1 -> TelaPiscas(link, est)
-                    2 -> TelaFitas(link, est)
-                    else -> TelaBuzina(link)
+                when (paginas.getOrNull(pagina)) {
+                    "Roda" -> TelaRoda(link, direto)
+                    "Piscas" -> TelaPiscas(link, est)
+                    "Fitas" -> TelaFitas(link, est)
+                    "Buzina" -> TelaBuzina(link)
+                    "Sons" -> TelaSons()
                 }
             }
         }
@@ -156,15 +171,16 @@ private fun ColumnScope.Principal(link: C3Link, macSalvo: String?, salvarMac: (S
 
 // ---------------- conexao ----------------
 @Composable
-private fun CartaoConexao(link: C3Link, con: Conexao, est: EstadoC3, macSalvo: String?, salvarMac: (String) -> Unit) {
+private fun CartaoConexao(link: C3Link, con: Conexao, est: EstadoC3, direto: Boolean, macSalvo: String?, salvarMac: (String) -> Unit) {
     val achados by link.achados.collectAsState()
-    Secao("C3 na roda") {
+    Secao("Conexão") {
         val texto = when (con) {
             Conexao.DESCONECTADO -> if (macSalvo == null) "Nenhum C3 escolhido ainda." else "Desconectado ($macSalvo)"
             Conexao.PROCURANDO -> "Procurando..."
             Conexao.CONECTANDO -> "Conectando em $macSalvo..."
             Conexao.CONECTADO ->
-                if (!est.recebido) "Conectado, esperando o C3 responder..."
+                if (direto) "Conectado direto na roda (sem C3): dados e sons funcionam; piscas e fitas precisam do C3."
+                else if (!est.recebido) "Conectado, esperando resposta..."
                 else "Conectado · rádio 433 ${if (est.radioOk) "ok" else "com problema"} · apps no C3: ${est.apps}"
             Conexao.DEMO -> "Demonstração: sem C3, nada é enviado de verdade."
         }
@@ -177,7 +193,7 @@ private fun CartaoConexao(link: C3Link, con: Conexao, est: EstadoC3, macSalvo: S
             } else {
                 if (macSalvo != null) Button(onClick = { link.conectar(macSalvo) }) { Text("Conectar") }
                 OutlinedButton(onClick = { link.procurar() }) {
-                    Text(if (macSalvo == null) "Procurar o C3" else "Procurar outro")
+                    Text(if (macSalvo == null) "Procurar" else "Procurar outro")
                 }
             }
         }
@@ -190,7 +206,7 @@ private fun CartaoConexao(link: C3Link, con: Conexao, est: EstadoC3, macSalvo: S
         }
         if (con == Conexao.PROCURANDO || (con == Conexao.DESCONECTADO && achados.isNotEmpty())) {
             if (achados.isEmpty()) {
-                Text("Ligue a roda: o C3 aparece com o nome dela (KS-...).", color = Apagado, fontSize = 13.sp)
+                Text("Ligue a roda: aparece o C3 (com o nome da roda, KS-...) ou a própria roda.", color = Apagado, fontSize = 13.sp)
             }
             achados.forEach { a ->
                 val ehRoda = a.mac.equals(MAC_RODA, ignoreCase = true)
@@ -198,14 +214,14 @@ private fun CartaoConexao(link: C3Link, con: Conexao, est: EstadoC3, macSalvo: S
                     Modifier.fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .background(Fundo)
-                        .clickable(enabled = !ehRoda) { salvarMac(a.mac); link.conectar(a.mac) }
+                        .clickable { salvarMac(a.mac); link.conectar(a.mac) }
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(a.nome, color = if (ehRoda) Apagado else Texto)
+                        Text(a.nome, color = Texto)
                         Text(
-                            a.mac + if (ehRoda) "  ·  a roda em si, não o C3" else "",
+                            a.mac + if (ehRoda) "  ·  a roda em si (direto, sem o C3)" else "",
                             fontSize = 12.sp, color = Apagado,
                         )
                     }
@@ -218,7 +234,7 @@ private fun CartaoConexao(link: C3Link, con: Conexao, est: EstadoC3, macSalvo: S
 
 // ---------------- dados e comandos da roda ----------------
 @Composable
-private fun TelaRoda(link: C3Link) {
+private fun TelaRoda(link: C3Link, direto: Boolean) {
     val r by link.roda.collectAsState()
     val temDados = r.quando != 0L && System.currentTimeMillis() - r.quando < 3_000
     Secao("Roda") {
@@ -274,14 +290,16 @@ private fun TelaRoda(link: C3Link) {
         var qual by remember { mutableStateOf(prefs.getString(ConexaoService.PREF_BUZINA, "roda") ?: "roda") }
         Text("Botão \"Buzina\" da notificação toca:", color = Apagado, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("roda" to "Buzina da roda", "externa" to "Buzina externa").forEach { (chave, nome) ->
+            val opcoes = if (direto) listOf("roda" to "Da roda", "celular" to "Do celular")
+                         else listOf("roda" to "Da roda", "externa" to "Externa", "celular" to "Do celular")
+            opcoes.forEach { (chave, nome) ->
                 Botao(nome, Modifier.weight(1f), selecionado = qual == chave) {
                     qual = chave
                     prefs.edit().putString(ConexaoService.PREF_BUZINA, chave).apply()
                 }
             }
         }
-        Text("A notificação mantém a conexão mesmo com o app fechado. Para encerrar, use \"Desconectar\".",
+        Text("A do celular é a última que você tocou na página Sons. A notificação mantém a conexão mesmo com o app fechado. Para encerrar, use \"Desconectar\".",
             color = Apagado, fontSize = 13.sp)
     }
 }
@@ -396,6 +414,134 @@ private fun TelaBuzina(link: C3Link) {
             }
         }
         Text("O som e o volume ficam guardados na própria buzina.", color = Apagado, fontSize = 13.sp)
+    }
+}
+
+// ---------------- sons do motor e buzinas no celular ----------------
+@Composable
+private fun TelaSons() {
+    val ctx = LocalContext.current
+    Som.iniciar(ctx)
+    val ligado by Som.ligado.collectAsState()
+    val aj by Som.ajustes.collectAsState()
+    val p by Som.painel.collectAsState()
+    val alvo by Som.alvoSim.collectAsState()
+    val auto by Som.autoSim.collectAsState()
+    val def = MOTORES.firstOrNull { it.id == aj.motor } ?: MOTORES[0]
+
+    Secao("Som do motor") {
+        BotaoGrande(if (ligado) "Desligar motor" else "Ligar motor", Modifier.fillMaxWidth(), selecionado = ligado) {
+            Som.alternar(ctx)
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+            Text("%.0f".format(p.velocidade), fontSize = 44.sp, fontWeight = FontWeight.Bold, color = Texto)
+            Text("  km/h", fontSize = 16.sp, color = Apagado, modifier = Modifier.padding(bottom = 8.dp))
+            Spacer(Modifier.weight(1f))
+            val giro = if (def.rpm) "%.0f rpm · %dª".format(p.rpm, p.marcha + 1) else "%.0f%%".format(p.rpm)
+            Text(giro, fontSize = 16.sp, color = Texto, modifier = Modifier.padding(bottom = 8.dp))
+        }
+        Text(
+            if (p.daRoda) "Velocidade vindo da roda." else "Sem dados da roda: usando a simulação abaixo.",
+            color = Apagado, fontSize = 13.sp,
+        )
+    }
+
+    Secao("Motor") {
+        MOTORES.chunked(2).forEach { par ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                par.forEach { m ->
+                    Escolha(m.nome, m.sub, Modifier.weight(1f), m.id == aj.motor) { Som.ajustar(aj.copy(motor = m.id)) }
+                }
+                if (par.size == 1) Box(Modifier.weight(1f))
+            }
+        }
+        Text(def.desc, color = Apagado, fontSize = 13.sp)
+    }
+
+    if (!p.daRoda || aj.simular) {
+        Secao("Simulação") {
+            Text("Velocidade: %.0f km/h".format(alvo), color = Texto)
+            Slider(value = alvo, onValueChange = { Som.alvoSim.value = it }, valueRange = 0f..50f)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BotaoSegurar("Acelerar", Modifier.weight(1f), { Som.segurar(true, false) }, { Som.segurar(false, false) })
+                BotaoSegurar("Frear", Modifier.weight(1f), { Som.segurar(false, true) }, { Som.segurar(false, false) })
+            }
+            LinhaSwitch("Passeio automático", auto) { Som.autoSim.value = it }
+        }
+    }
+
+    Secao("Buzinas do celular") {
+        val prefs = ctx.getSharedPreferences("s16", android.content.Context.MODE_PRIVATE)
+        BUZINAS.chunked(2).forEach { par ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                par.forEach { b ->
+                    BotaoSegurar(b.nome, Modifier.weight(1f), {
+                        Som.apertaBuzina(ctx, b.id)
+                        prefs.edit().putString(ConexaoService.PREF_BUZINA_CEL, b.id).apply()
+                    }, { Som.soltaBuzina() })
+                }
+                if (par.size == 1) Box(Modifier.weight(1f))
+            }
+        }
+        Text("Segure para buzinar: as longas tocam enquanto o dedo estiver em cima.", color = Apagado, fontSize = 13.sp)
+    }
+
+    Secao("Ajustes do som") {
+        Text("Volume: ${(aj.volume * 100).roundToInt()}%", color = Texto)
+        Slider(value = aj.volume, onValueChange = { Som.ajustar(aj.copy(volume = it)) }, valueRange = 0f..1f)
+        Text("Timbre: " + (if (aj.timbre > 0) "+" else "") + "${aj.timbre.roundToInt()} dB (mais grave ↔ mais agudo)", color = Texto)
+        Slider(value = aj.timbre, onValueChange = { Som.ajustar(aj.copy(timbre = it.roundToInt().toFloat())) }, valueRange = -12f..12f)
+        Text("Reação ao acelerar: " + "%.1f×".format(aj.reacao), color = Texto)
+        Slider(value = aj.reacao, onValueChange = { Som.ajustar(aj.copy(reacao = (it * 10).roundToInt() / 10f)) }, valueRange = 0.5f..3f)
+        if (def.rpm && !def.cvt) LinhaSwitch("Trocar marchas", aj.marchas) { Som.ajustar(aj.copy(marchas = it)) }
+        if (def.tipo == "banco") LinhaSwitch("Estouros no escapamento", aj.estouros) { Som.ajustar(aj.copy(estouros = it)) }
+        LinhaSwitch("Ligar o motor sozinho ao conectar", aj.ligarJunto) { Som.ajustar(aj.copy(ligarJunto = it)) }
+        LinhaSwitch("Simular mesmo com a roda conectada", aj.simular) { Som.ajustar(aj.copy(simular = it)) }
+        Text("O som segue tocando com a tela apagada e o celular no bolso (pela notificação).",
+            color = Apagado, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun Escolha(nome: String, sub: String, modifier: Modifier, selecionado: Boolean, onClick: () -> Unit) {
+    val forma = RoundedCornerShape(12.dp)
+    Column(
+        modifier
+            .clip(forma)
+            .background(if (selecionado) Laranja else Fundo)
+            .border(1.dp, if (selecionado) Laranja else Apagado, forma)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        val cor = if (selecionado) Color(0xFF1B1200) else Texto
+        Text(nome, color = cor, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1)
+        Text(sub, color = if (selecionado) cor else Apagado, fontSize = 12.sp, maxLines = 1)
+    }
+}
+
+/** Botao que age enquanto esta apertado (buzina, acelerar). */
+@Composable
+private fun BotaoSegurar(texto: String, modifier: Modifier = Modifier, aperta: () -> Unit, solta: () -> Unit) {
+    var apertado by remember { mutableStateOf(false) }
+    val ap by rememberUpdatedState(aperta)
+    val so by rememberUpdatedState(solta)
+    val forma = RoundedCornerShape(24.dp)
+    Box(
+        modifier
+            .height(48.dp)
+            .clip(forma)
+            .background(if (apertado) Laranja else Fundo)
+            .border(1.dp, if (apertado) Laranja else Apagado, forma)
+            .pointerInput(Unit) {
+                detectTapGestures(onPress = {
+                    apertado = true
+                    ap()
+                    try { tryAwaitRelease() } finally { apertado = false; so() }
+                })
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(texto, color = if (apertado) Color(0xFF1B1200) else Texto, fontSize = 14.sp, maxLines = 1)
     }
 }
 

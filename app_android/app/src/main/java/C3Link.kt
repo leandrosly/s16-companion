@@ -108,6 +108,8 @@ class C3Link private constructor(private val ctx: Context) {
         private val CARAC: UUID = UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb")
         private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private val MARCA = byteArrayOf(0xEE.toByte(), 0x53, 0x31, 0x36)
+        /** Preferencia: o usuario quer ficar conectado (o servico reconecta se for recriado). */
+        const val PREF_QUER = "quer_conexao"
 
         // Uma conexao so para o app inteiro (sobrevive a girar a tela)
         @Volatile private var unico: C3Link? = null
@@ -119,11 +121,15 @@ class C3Link private constructor(private val ctx: Context) {
     val roda = MutableStateFlow(DadosRoda())
     private val socPack = floatArrayOf(-1f, -1f)
     val conexao = MutableStateFlow(Conexao.DESCONECTADO)
+    /** Conectado direto na roda (sem C3): chegam dados da roda, mas o C3 nunca respondeu. */
+    val direto = MutableStateFlow(false)
+    private var quandoPronto = 0L
     val achados = MutableStateFlow<List<Achado>>(emptyList())
 
     private val adaptador: BluetoothAdapter? =
         (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     private val main = Handler(Looper.getMainLooper())
+    private fun prefs() = ctx.getSharedPreferences("s16", Context.MODE_PRIVATE)
 
     // tudo abaixo so e mexido na thread principal (os callbacks do Bluetooth fazem main.post)
     private var gatt: BluetoothGatt? = null
@@ -167,6 +173,7 @@ class C3Link private constructor(private val ctx: Context) {
     // ---------------- conexao ----------------
     /** Conecta pedido pelo usuario: tambem liga o servico (notificacao + conexao com a tela apagada). */
     fun conectar(mac: String) {
+        prefs().edit().putBoolean(PREF_QUER, true).apply()
         ConexaoService.iniciar(ctx)
         reconectar(mac)
     }
@@ -191,7 +198,8 @@ class C3Link private constructor(private val ctx: Context) {
 
     fun desconectar() {
         querConectado = false
-        ConexaoService.parar(ctx)
+        prefs().edit().putBoolean(PREF_QUER, false).apply()
+        if (!Som.ligado.value) ConexaoService.parar(ctx)        // com o som ligado, o servico continua
         main.post {
             querConectado = false
             gatt?.disconnect()
@@ -200,6 +208,7 @@ class C3Link private constructor(private val ctx: Context) {
             carac = null
             fila.clear()
             ocupado = false
+            direto.value = false
             conexao.value = Conexao.DESCONECTADO
         }
     }
@@ -218,6 +227,7 @@ class C3Link private constructor(private val ctx: Context) {
                     carac = null
                     fila.clear()
                     ocupado = false
+                    direto.value = false
                     conexao.value = Conexao.DESCONECTADO
                     if (querConectado) {                         // roda desligou? tenta de novo
                         main.postDelayed({
@@ -292,8 +302,13 @@ class C3Link private constructor(private val ctx: Context) {
     private fun pronto() {
         if (gatt == null || conexao.value == Conexao.CONECTADO) return
         Log.i(TAG, "pronto: mandando HELLO")
+        quandoPronto = System.currentTimeMillis()
+        direto.value = false
+        estado.value = EstadoC3()                                // (o de uma conexao anterior nao vale)
         conexao.value = Conexao.CONECTADO
         enviar(Cmd.HELLO, 1)                                     // "sou o app": o C3 manda o estado
+        enviarRoda(0x9B)                                         // pede o nome da roda (como os outros apps):
+                                                                 // conectado direto na roda, faz ela comecar a mandar
     }
 
     // ---------------- envio ----------------
@@ -354,6 +369,7 @@ class C3Link private constructor(private val ctx: Context) {
         for (i in 0..3) if (v[16 + i] != MARCA[i]) canal = false
         if (!canal) { dadosDaRoda(v); return }
         if (v[2] != 0x02.toByte()) return
+        if (direto.value) direto.value = false                   // o C3 respondeu, afinal
         fun u(i: Int) = v[i].toInt() and 0xFF
         estado.value = EstadoC3(
             recebido = true,
@@ -372,6 +388,12 @@ class C3Link private constructor(private val ctx: Context) {
         fun s16(i: Int) = u16(i).toShort().toInt()
         fun u32r(i: Int) = (u16(i).toLong() shl 16) or u16(i + 2).toLong()
         val r = roda.value
+        // dados da roda chegando e o C3 calado: estamos conectados direto na roda
+        if (!direto.value && conexao.value == Conexao.CONECTADO && !estado.value.recebido &&
+            System.currentTimeMillis() - quandoPronto > 2_500) {
+            Log.i(TAG, "sem resposta do C3, mas a roda manda dados: conexao direta")
+            direto.value = true
+        }
         when (u8(16)) {
             0xA9 -> roda.value = r.copy(
                 tensao = u16(2) / 100f, velocidade = u16(4) / 100f,
@@ -398,7 +420,7 @@ class C3Link private constructor(private val ctx: Context) {
     // ---------------- demonstracao (sem C3) ----------------
     /** Finge um C3 conectado: os comandos mudam um estado local, como o C3 faria. */
     fun entrarDemo() {
-        ConexaoService.parar(ctx)
+        if (!Som.ligado.value) ConexaoService.parar(ctx)
         main.post {
             pararBusca()
             querConectado = false
@@ -455,7 +477,8 @@ class C3Link private constructor(private val ctx: Context) {
     // Se o estado parar de chegar (C3 reiniciou e esqueceu o app), manda o HELLO de novo
     private val vigia = object : Runnable {
         override fun run() {
-            if (conexao.value == Conexao.CONECTADO && System.currentTimeMillis() - estado.value.quando > 5_000) {
+            if (conexao.value == Conexao.CONECTADO && !direto.value &&
+                System.currentTimeMillis() - estado.value.quando > 5_000) {
                 enviar(Cmd.HELLO, 1)
             }
             main.postDelayed(this, 3_000)
