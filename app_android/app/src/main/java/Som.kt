@@ -36,6 +36,7 @@ data class AjustesSom(
     val reacao: Float = 1f,            // 0,5..3
     val marchas: Boolean = true,
     val estouros: Boolean = true,
+    val pneu: Boolean = true,          // pneu cantando nas freadas fortes
     val simular: Boolean = false,      // usa a simulacao mesmo com a roda conectada
     val ligarJunto: Boolean = false,   // liga o motor sozinho quando conectar
 )
@@ -82,6 +83,7 @@ object Som {
             reacao = p.getFloat("reacao", padrao.reacao),
             marchas = p.getBoolean("marchas", padrao.marchas),
             estouros = p.getBoolean("estouros", padrao.estouros),
+            pneu = p.getBoolean("pneu", padrao.pneu),
             simular = p.getBoolean("simular", padrao.simular),
             ligarJunto = p.getBoolean("ligarJunto", padrao.ligarJunto),
         )
@@ -92,7 +94,7 @@ object Som {
         if (iniciado) {
             app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString("motor", novo.motor).putFloat("volume", novo.volume).putFloat("timbre", novo.timbre)
-                .putFloat("reacao", novo.reacao).putBoolean("marchas", novo.marchas).putBoolean("estouros", novo.estouros)
+                .putFloat("reacao", novo.reacao).putBoolean("marchas", novo.marchas).putBoolean("estouros", novo.estouros).putBoolean("pneu", novo.pneu)
                 .putBoolean("simular", novo.simular).putBoolean("ligarJunto", novo.ligarJunto)
                 .apply()
         }
@@ -101,7 +103,7 @@ object Som {
 
     private fun aplica(m: Mesa, a: AjustesSom) {
         m.volume = a.volume; m.timbre = a.timbre; m.reacao = a.reacao
-        m.marchas = a.marchas; m.estouros = a.estouros
+        m.marchas = a.marchas; m.estouros = a.estouros; m.pneuCantando = a.pneu
         if (m.motorId != a.motor) m.escolher(a.motor)
     }
 
@@ -220,7 +222,7 @@ object Som {
                     if (alvo != alvoEnviado) { m.alvo = alvo; alvoEnviado = alvo }   // mexeram na barra
                     m.auto = autoSim.value
                 }
-                m.gera(buf, quadros, if (daRoda) r.velocidade else Float.NaN, if (daRoda) r.corrente else Float.NaN)
+                m.gera(buf, quadros, if (daRoda) r.velocidade else Float.NaN, if (daRoda) r.corrente else Float.NaN, r.quando)
                 t.write(buf, 0, buf.size, AudioTrack.WRITE_BLOCKING)
 
                 if (agora >= proxPainel) {

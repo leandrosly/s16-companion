@@ -1,11 +1,17 @@
 package systems.leandro.s16
 
-// Telas do app (Jetpack Compose): conexao no topo e as paginas embaixo, que trocam tocando
+// Telas do app (Jetpack Compose): barra com a conexao no topo e as paginas embaixo, que trocam tocando
 // nos botoes ou arrastando para o lado:
 //   com o C3:              Roda, Piscas, Fitas, Buzina, Sons
 //   direto na roda:        Roda, Sons
 //   sem conexao:           Sons (com a simulacao de velocidade)
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,6 +39,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
@@ -54,13 +62,20 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -111,11 +126,14 @@ fun App(
                 Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("S16 Companion", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Texto)
+                if (!temPermissao || !btLigado) Text("S16 Companion", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Texto)
                 when {
                     !temPermissao -> Aviso("O app precisa da permissão de Bluetooth para achar o C3 na roda.", "Permitir", pedirPermissao)
                     !btLigado -> Aviso("O Bluetooth está desligado. Ligue e volte para o app.", null) {}
-                    else -> Principal(link, macSalvo, salvarMac)   // (dentro da Column: ocupa o resto da tela)
+                    else -> {
+                        BarraTopo(link, macSalvo, salvarMac)
+                        Principal(link)                          // (dentro da Column: ocupa o resto da tela)
+                    }
                 }
             }
         }
@@ -123,12 +141,10 @@ fun App(
 }
 
 @Composable
-private fun ColumnScope.Principal(link: C3Link, macSalvo: String?, salvarMac: (String) -> Unit) {
+private fun ColumnScope.Principal(link: C3Link) {
     val con by link.conexao.collectAsState()
     val est by link.estado.collectAsState()
     val direto by link.direto.collectAsState()
-
-    CartaoConexao(link, con, est, direto, macSalvo, salvarMac)
 
     val comC3 = (con == Conexao.CONECTADO && est.recebido) || con == Conexao.DEMO
     val naRoda = con == Conexao.CONECTADO && direto
@@ -169,66 +185,162 @@ private fun ColumnScope.Principal(link: C3Link, macSalvo: String?, salvarMac: (S
     }
 }
 
-// ---------------- conexao ----------------
+// ---------------- barra do topo: nome, estado da conexao e o botao do Bluetooth ----------------
+// Icone do Bluetooth:  cinza = desconectado (toque: conecta)  ·  piscando = tentando (toque: para)
+//                      colorido = conectado (toque: menu com detalhes, trocar e desconectar)
+// O "+" ao lado (so desconectado) abre a lista para escolher o C3 ou a roda.
 @Composable
-private fun CartaoConexao(link: C3Link, con: Conexao, est: EstadoC3, direto: Boolean, macSalvo: String?, salvarMac: (String) -> Unit) {
+private fun BarraTopo(link: C3Link, macSalvo: String?, salvarMac: (String) -> Unit) {
+    val con by link.conexao.collectAsState()
+    val est by link.estado.collectAsState()
+    val direto by link.direto.collectAsState()
+    var lista by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    val tentando = con == Conexao.CONECTANDO || (con == Conexao.DESCONECTADO && link.querendoConexao)
+
+    val estado = when {
+        con == Conexao.DEMO -> "demonstração"
+        con == Conexao.CONECTADO && direto -> "na roda (sem C3)"
+        con == Conexao.CONECTADO && est.recebido -> if (est.radioOk) "conectado" else "conectado · rádio 433 com problema"
+        con == Conexao.CONECTADO -> "esperando resposta..."
+        tentando -> "conectando..."
+        con == Conexao.PROCURANDO -> "procurando..."
+        macSalvo == null -> "toque no + para achar a roda"
+        else -> "desconectado"
+    }
+    val corEstado = if (con == Conexao.CONECTADO && est.recebido && !est.radioOk) Laranja else Apagado
+
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("S16 Companion", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Texto, maxLines = 1)
+            Text(estado, fontSize = 13.sp, color = corEstado, maxLines = 1)
+        }
+        if (con == Conexao.DESCONECTADO && !tentando || con == Conexao.PROCURANDO) {
+            IconeRedondo(Modifier.padding(end = 8.dp), ativo = false, onClick = { lista = true }) { cor -> DesenhoMais(cor) }
+        }
+        Box {
+            val alfa = if (tentando) {
+                val pisca = rememberInfiniteTransition(label = "pisca")
+                pisca.animateFloat(
+                    initialValue = 1f, targetValue = 0.25f,
+                    animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "alfa",
+                ).value
+            } else 1f
+            val ativo = con == Conexao.CONECTADO || con == Conexao.DEMO || tentando
+            IconeRedondo(Modifier.alpha(alfa), ativo = ativo, onClick = {
+                when {
+                    con == Conexao.CONECTADO || con == Conexao.DEMO -> menu = true
+                    tentando -> link.desconectar()                                // para de tentar
+                    macSalvo != null -> link.conectar(macSalvo)
+                    else -> lista = true
+                }
+            }) { cor -> DesenhoBluetooth(cor) }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                val info = when {
+                    con == Conexao.DEMO -> "Demonstração: nada é enviado de verdade."
+                    direto -> "Direto na roda: dados e sons funcionam; piscas e fitas precisam do C3."
+                    else -> "C3 · rádio 433 ${if (est.radioOk) "ok" else "com problema"} · apps no C3: ${est.apps}"
+                }
+                Text(info, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontSize = 13.sp, color = Apagado)
+                if (con == Conexao.DEMO) {
+                    DropdownMenuItem(text = { Text("Sair da demonstração") }, onClick = { menu = false; link.sairDemo() })
+                } else {
+                    DropdownMenuItem(text = { Text("Trocar de roda / C3") }, onClick = { menu = false; link.desconectar(); lista = true })
+                    DropdownMenuItem(text = { Text("Desconectar") }, onClick = { menu = false; link.desconectar() })
+                }
+            }
+        }
+    }
+    if (lista) SeletorConexao(link, salvarMac) { lista = false }
+}
+
+/** Janela com a busca: lista o C3 e a roda que aparecerem. */
+@Composable
+private fun SeletorConexao(link: C3Link, salvarMac: (String) -> Unit, fechar: () -> Unit) {
     val achados by link.achados.collectAsState()
-    Secao("Conexão") {
-        val texto = when (con) {
-            Conexao.DESCONECTADO -> if (macSalvo == null) "Nenhum C3 escolhido ainda." else "Desconectado ($macSalvo)"
-            Conexao.PROCURANDO -> "Procurando..."
-            Conexao.CONECTANDO -> "Conectando em $macSalvo..."
-            Conexao.CONECTADO ->
-                if (direto) "Conectado direto na roda (sem C3): dados e sons funcionam; piscas e fitas precisam do C3."
-                else if (!est.recebido) "Conectado, esperando resposta..."
-                else "Conectado · rádio 433 ${if (est.radioOk) "ok" else "com problema"} · apps no C3: ${est.apps}"
-            Conexao.DEMO -> "Demonstração: sem C3, nada é enviado de verdade."
-        }
-        Text(texto, color = Texto)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (con == Conexao.DEMO) {
-                OutlinedButton(onClick = { link.sairDemo() }) { Text("Sair da demonstração") }
-            } else if (con == Conexao.CONECTADO || con == Conexao.CONECTANDO) {
-                OutlinedButton(onClick = { link.desconectar() }) { Text("Desconectar") }
-            } else {
-                if (macSalvo != null) Button(onClick = { link.conectar(macSalvo) }) { Text("Conectar") }
-                OutlinedButton(onClick = { link.procurar() }) {
-                    Text(if (macSalvo == null) "Procurar" else "Procurar outro")
-                }
-            }
-        }
-        if (con == Conexao.DESCONECTADO) {
-            Text(
-                "Ver as telas sem o C3 (demonstração)",
-                Modifier.clickable { link.entrarDemo() }.padding(vertical = 4.dp),
-                color = Laranja, fontSize = 14.sp,
-            )
-        }
-        if (con == Conexao.PROCURANDO || (con == Conexao.DESCONECTADO && achados.isNotEmpty())) {
-            if (achados.isEmpty()) {
-                Text("Ligue a roda: aparece o C3 (com o nome da roda, KS-...) ou a própria roda.", color = Apagado, fontSize = 13.sp)
-            }
-            achados.forEach { a ->
-                val ehRoda = a.mac.equals(MAC_RODA, ignoreCase = true)
-                Row(
-                    Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Fundo)
-                        .clickable { salvarMac(a.mac); link.conectar(a.mac) }
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(a.nome, color = Texto)
-                        Text(
-                            a.mac + if (ehRoda) "  ·  a roda em si (direto, sem o C3)" else "",
-                            fontSize = 12.sp, color = Apagado,
-                        )
+    val con by link.conexao.collectAsState()
+    var buscou by remember { mutableStateOf(false) }
+    LaunchedEffect(con) { if (!buscou && con == Conexao.DESCONECTADO) { buscou = true; link.procurar() } }
+    val sair = { link.pararBusca(); fechar() }
+    Dialog(onDismissRequest = sair) {
+        Card(colors = CardDefaults.cardColors(containerColor = Painel), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Conectar", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Texto)
+                Text(
+                    if (con == Conexao.PROCURANDO) "Procurando... ligue a roda: aparece o C3 (com o nome da roda, KS-...) ou a própria roda."
+                    else "Busca parada.",
+                    color = Apagado, fontSize = 13.sp,
+                )
+                achados.forEach { a ->
+                    val ehRoda = a.mac.equals(MAC_RODA, ignoreCase = true)
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Fundo)
+                            .clickable { salvarMac(a.mac); link.conectar(a.mac); fechar() }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(a.nome, color = Texto)
+                            Text(
+                                a.mac + if (ehRoda) "  ·  a roda em si (direto, sem o C3)" else "",
+                                fontSize = 12.sp, color = Apagado,
+                            )
+                        }
+                        Text("${a.rssi} dBm", fontSize = 12.sp, color = Apagado)
                     }
-                    Text("${a.rssi} dBm", fontSize = 12.sp, color = Apagado)
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Demonstração",
+                        Modifier.clickable { link.pararBusca(); link.entrarDemo(); fechar() }.padding(vertical = 8.dp),
+                        color = Laranja, fontSize = 14.sp,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (con != Conexao.PROCURANDO) OutlinedButton(onClick = { link.procurar() }) { Text("Procurar de novo") }
+                    else OutlinedButton(onClick = sair) { Text("Fechar") }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun IconeRedondo(modifier: Modifier, ativo: Boolean, onClick: () -> Unit, desenho: @Composable (Color) -> Unit) {
+    Box(
+        modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(if (ativo) Laranja else Painel)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { desenho(if (ativo) Color(0xFF1B1200) else Apagado) }
+}
+
+/** O simbolo do Bluetooth (a runa), desenhado na mao para nao depender da biblioteca de icones. */
+@Composable
+private fun DesenhoBluetooth(cor: Color) {
+    Canvas(Modifier.size(22.dp)) {
+        val w = size.width; val h = size.height
+        val p = Path().apply {
+            moveTo(w * 0.28f, h * 0.30f)
+            lineTo(w * 0.72f, h * 0.70f)
+            lineTo(w * 0.50f, h * 0.90f)
+            lineTo(w * 0.50f, h * 0.10f)
+            lineTo(w * 0.72f, h * 0.30f)
+            lineTo(w * 0.28f, h * 0.70f)
+        }
+        drawPath(p, cor, style = Stroke(width = w * 0.10f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    }
+}
+
+@Composable
+private fun DesenhoMais(cor: Color) {
+    Canvas(Modifier.size(18.dp)) {
+        val w = size.width; val h = size.height; val e = w * 0.12f
+        drawLine(cor, Offset(w / 2, 0f), Offset(w / 2, h), strokeWidth = e, cap = StrokeCap.Round)
+        drawLine(cor, Offset(0f, h / 2), Offset(w, h / 2), strokeWidth = e, cap = StrokeCap.Round)
     }
 }
 
@@ -495,6 +607,7 @@ private fun TelaSons() {
         Slider(value = aj.reacao, onValueChange = { Som.ajustar(aj.copy(reacao = (it * 10).roundToInt() / 10f)) }, valueRange = 0.5f..3f)
         if (def.rpm && !def.cvt) LinhaSwitch("Trocar marchas", aj.marchas) { Som.ajustar(aj.copy(marchas = it)) }
         if (def.tipo == "banco") LinhaSwitch("Estouros no escapamento", aj.estouros) { Som.ajustar(aj.copy(estouros = it)) }
+        LinhaSwitch("Pneu cantando nas freadas fortes", aj.pneu) { Som.ajustar(aj.copy(pneu = it)) }
         LinhaSwitch("Ligar o motor sozinho ao conectar", aj.ligarJunto) { Som.ajustar(aj.copy(ligarJunto = it)) }
         LinhaSwitch("Simular mesmo com a roda conectada", aj.simular) { Som.ajustar(aj.copy(simular = it)) }
         Text("O som segue tocando com a tela apagada e o celular no bolso (pela notificação).",

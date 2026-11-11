@@ -273,6 +273,39 @@ class Geradas(val sr: Float) {
     val v8 = pulso(0.1f, 120f, 55f, 0.02f, 0.5f)
     val dt = pulso(0.06f, 320f, 170f, 0.01f, 0.8f, ringF = 1450f, ringAmt = 0.35f, lpK = 0.4f)
     val pop = pulso(0.05f, 200f, 90f, 0.007f, 1.4f, lpK = 0.6f)
+    /** Buzina de duas notas ("ôh-éh"): dois ciclos iguais (o 2o e o laco) + um final curto. */
+    val duasNotas = buzinaDuasNotas()
+
+    private fun buzinaDuasNotas(): Amostra {
+        val nota = 0.5f                         // segundos por nota
+        val grave = 440f; val agudo = 587.33f   // la e re acima: a quarta das buzinas de duas notas
+        val ciclo = (2 * nota * sr).toInt()
+        val rabo = (0.15f * sr).toInt()
+        val n = 2 * ciclo + rabo
+        val d = FloatArray(n)
+        var fase = 0.0
+        var f = grave
+        val kf = 1f - exp(-1f / (0.008f * sr))  // a membrana desliza ~8 ms entre as notas
+        val bp = Filtro(Filtro.FAIXA, 1400f, 0.9f); bp.ajusta(sr)
+        val lp = Filtro(Filtro.PB, 4200f); lp.ajusta(sr)
+        for (i in 0 until n) {
+            val t = i / sr
+            val alvo = if (i >= 2 * ciclo) agudo else if (i % ciclo < ciclo / 2) grave else agudo
+            f += (alvo - f) * kf
+            val fv = f * (1f + 0.004f * sin(DOIS_PI * 5.5 * t).toFloat())
+            fase += fv / sr
+            if (fase >= 1.0) fase -= 1.0
+            // som de corneta: pulso estreito (rico em harmonicos) e um formante
+            var x = if (fase < 0.18) 1f else -0.22f
+            x = bp.proc(x) * 1.6f + lp.proc(x) * 0.35f
+            var env = min(1f, t / 0.015f)
+            if (i >= 2 * ciclo) env *= exp(-(i - 2 * ciclo) / (0.03f * sr))
+            d[i] = tanh(x * 1.4f) * 0.75f * env
+        }
+        val media = d.copyOfRange(ciclo, 2 * ciclo).average().toFloat()        // tira o nivel DC
+        for (i in 0 until n) d[i] -= media * min(1f, i / (0.015f * sr)) * (if (i >= 2 * ciclo) exp(-(i - 2 * ciclo) / (0.03f * sr)) else 1f)
+        return Amostra(d, sr.toInt())
+    }
 
     private fun ruidoNorm(tipo: Char): FloatArray {
         val n = (sr * 4).toInt()
@@ -378,6 +411,7 @@ val BUZINAS: List<Buzina> = listOf(
     Buzina("b_mega", "Mega buzina", 0.72958, 2.20471),
     Buzina("b_trem", "Trem", 1.43725, 3.742),
     Buzina("b_bulb", "Fon-fon"),
+    Buzina("b_duas", "Ôh-éh", 1.0, 2.0),
     Buzina("b_bici", "Bicicleta"),
 )
 
@@ -873,10 +907,47 @@ class Compressor(private val sr: Float) {
 }
 
 // =====================================================================================
+//  Pneu cantando nas freadas fortes (vale para todos os motores)
+// =====================================================================================
+class Pneu(private val sr: Float, g: Geradas) {
+    private val o = Osc('w', sr); private val o2 = Osc('s', sr); private val vib = Osc('s', sr)
+    private val bp = Filtro(Filtro.FAIXA, 2400f, 6f)
+    private val nz = Laco(g.branco2, (0.3f * sr).toInt()); private val bpN = Filtro(Filtro.FAIXA, 2800f, 2f)
+    private val f = Suave(1250f)
+    private val ganho = Suave(0f)
+    private var deriva = 0f
+    var ativo = true
+
+    fun update(v: Float, a: Float, dt: Float) {
+        val forca = clampf((-a - 9f) / 10f, 0f, 1f) * clampf((v - 6f) / 8f, 0f, 1f)
+        val alvo = if (ativo) forca * 0.35f else 0f
+        ganho.para(alvo, if (alvo > ganho.valor) 0.04f else 0.12f)
+        deriva += ((rnd() - 0.5f) * 900f - deriva) * min(1f, dt * 3f)        // o tom passeia
+        f.para(clampf(950f + v * 12f + deriva * 0.3f, 700f, 2200f), 0.05f)
+    }
+
+    fun soma(l: FloatArray, r: FloatArray, n: Int) {
+        val g0 = ganho.valor; val g1 = ganho.avanca(n, sr)
+        val fr = f.avanca(n, sr)
+        if (g0 < 1e-5f && g1 < 1e-5f) return
+        bp.f = fr * 2f; bp.ajusta(sr); bpN.ajusta(sr)
+        val dg = (g1 - g0) / n; var g = g0
+        for (i in 0 until n) {
+            g += dg
+            val ff = fr * (1f + 0.025f * vib.prox(7f))
+            val y = (bp.proc(o.prox(ff)) * 1.5f + o2.prox(ff) * 0.5f + bpN.proc(nz.prox()) * 0.3f) * g
+            l[i] += y; r[i] += y
+        }
+    }
+}
+
+// =====================================================================================
 //  A mesa: simulacao + motor + buzinas + cadeia final
 // =====================================================================================
-class Mesa(val sr: Float, private val sons: Map<String, Amostra>) {
+class Mesa(val sr: Float, sonsGravados: Map<String, Amostra>) {
     private val geradas = Geradas(sr)
+    private val sons: Map<String, Amostra> = sonsGravados + ("b_duas" to geradas.duasNotas)
+    private val pneu = Pneu(sr, geradas)
     private val cmds = ConcurrentLinkedQueue<(Mesa) -> Unit>()
     /** Executa no proximo bloco, na thread do audio. */
     fun manda(c: (Mesa) -> Unit) { cmds.add(c) }
@@ -887,6 +958,9 @@ class Mesa(val sr: Float, private val sons: Map<String, Amostra>) {
     var reacao = 1f
     var marchas = true
     var estouros = true
+    var pneuCantando: Boolean
+        get() = pneu.ativo
+        set(x) { pneu.ativo = x }
 
     // simulacao (para testar sem a roda)
     var alvo = 0f
@@ -988,10 +1062,30 @@ class Mesa(val sr: Float, private val sons: Map<String, Amostra>) {
     }
 
     // ---------------- simulacao (passo + calcRpm do laboratorio) ----------------
-    private fun passo(dt: Float, vRoda: Float, corrente: Float) {
+    // amostras da roda: chegam em degraus (alguns por segundo); entre uma e outra, segue a
+    // tendencia das duas ultimas (sem isso o som fica atrasado ou em degraus)
+    private var rodaQuando = 0L
+    private var rodaV = 0f
+    private var rodaInc = 0f        // km/h por segundo entre as duas ultimas amostras
+    private var rodaIntervalo = 0.2f
+    private var desdeAmostra = 0f
+
+    private fun passo(dt: Float, vRoda: Float, corrente: Float, quando: Long) {
         if (!vRoda.isNaN()) {
-            v += (abs(vRoda) - v) * min(1f, dt / 0.15f)          // segue a roda (suavizado)
+            val vr = abs(vRoda)
+            if (quando != rodaQuando) {
+                if (rodaQuando != 0L) {
+                    val iv = clampf((quando - rodaQuando) / 1000f, 0.03f, 1f)
+                    rodaIntervalo += (iv - rodaIntervalo) * 0.3f
+                    rodaInc += (clampf((vr - rodaV) / iv, -40f, 40f) - rodaInc) * 0.6f
+                }
+                rodaQuando = quando; rodaV = vr; desdeAmostra = 0f
+            }
+            desdeAmostra += dt
+            val previsto = max(0f, rodaV + rodaInc * min(desdeAmostra, rodaIntervalo * 1.2f))
+            v += (previsto - v) * min(1f, dt / 0.04f)
         } else {
+            rodaQuando = 0L
             if (segAcel) alvo = min(50f, alvo + 14f * dt)
             if (segFreio) alvo = max(0f, alvo - 22f * dt)
             if (auto && !segAcel && !segFreio) {
@@ -999,7 +1093,7 @@ class Mesa(val sr: Float, private val sons: Map<String, Amostra>) {
                 if (autoT <= 0f) { alvo = if (rnd() < 0.2f) 0f else (8 + rnd() * 40).toInt().toFloat(); autoT = 3 + rnd() * 5 }
             }
             val diff = alvo - v
-            val taxa = if (diff > 0) 7f else 10f
+            val taxa = if (diff > 0) 7f else if (segFreio) 18f else 10f   // "Frear" segurado = freada forte
             v += Math.signum(diff) * min(abs(diff), taxa * dt * min(1f, abs(diff) / 4f + 0.15f))
         }
         if (dt > 0) a += ((v - vAnt) / dt - a) * min(1f, dt * 6f)
@@ -1038,18 +1132,20 @@ class Mesa(val sr: Float, private val sons: Map<String, Amostra>) {
     /**
      * Gera n quadros estereo intercalados em out (L R L R ...).
      * vRoda: velocidade da roda em km/h, ou NaN para usar a simulacao. corrente: A, ou NaN.
+     * quando: hora (ms) em que chegou a amostra da roda (para saber quando chega uma nova).
      */
-    fun gera(out: FloatArray, n: Int, vRoda: Float, corrente: Float) {
+    fun gera(out: FloatArray, n: Int, vRoda: Float, corrente: Float, quando: Long = 0L) {
         var feito = 0
         while (feito < n) {
             if (fase == 0) {
                 while (true) { val c = cmds.poll() ?: break; c(this) }
                 val dt = BLOCO * CONTROLE / sr
-                passo(dt, vRoda, corrente)
+                passo(dt, vRoda, corrente, quando)
                 val d = def
                 es.v = v; es.a = a; es.load = load; es.rpm = rpm; es.rpmN = rpm / d.max; es.dt = dt; es.estouros = estouros
                 motor?.update(es)
                 for (m in saindo) m.update(es)
+                pneu.update(v, a, dt)
                 vol.para(volume, 0.03f)
                 graveL.g = -timbre * 0.7f; graveR.g = graveL.g
                 agudoL.g = timbre; agudoR.g = timbre
@@ -1060,6 +1156,7 @@ class Mesa(val sr: Float, private val sons: Map<String, Amostra>) {
             motor?.mistura(bl, br, k)
             for (m in saindo) m.mistura(bl, br, k)
             saindo.removeAll { it.acabou }
+            pneu.soma(bl, br, k)
             for (b in buzinas) b.soma(bl, br, k)
             buzinas.removeAll { it.acabou }
             buzSeguraT += k / sr.toDouble()
