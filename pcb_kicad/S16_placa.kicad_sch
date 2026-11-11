@@ -4735,7 +4735,7 @@
 				)
 			)
 		)
-		(property "Value" "220uF 10V (5 mm, filtro do TX)"
+		(property "Value" "100uF 10V (5 mm, filtro do TX)"
 			(at 209.55 115.57 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5239,7 +5239,7 @@
 				)
 			)
 		)
-		(property "Value" "470uF 10V (6,3 mm)"
+		(property "Value" "470uF 25V (8 mm)"
 			(at 247.65 96.52 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5249,7 +5249,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Capacitor_THT:CP_Radial_D6.3mm_P2.50mm"
+		(property "Footprint" "Capacitor_THT:CP_Radial_D8.0mm_P3.50mm"
 			(at 247.65 93.98 0)
 			(hide yes)
 			(show_name no)

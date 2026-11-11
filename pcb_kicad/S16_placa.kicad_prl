@@ -40,12 +40,10 @@
       "footprint_values",
       "footprint_references",
       "tracks",
-      "drc_errors",
       "drawing_sheet",
       "bitmaps",
       "pads",
       "zones",
-      "drc_warnings",
       "drc_exclusions",
       "locked_item_shadows",
       "conflict_shadows",
@@ -53,7 +51,7 @@
       "board_outline_area",
       "ly_points"
     ],
-    "visible_layers": "00000000_00000000_00000000_82020025",
+    "visible_layers": "00000000_00000000_00000000_82020005",
     "zone_display_mode": 0
   },
   "git": {
