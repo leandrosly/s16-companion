@@ -588,8 +588,8 @@ private fun TelaSons() {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 par.forEach { b ->
                     BotaoSegurar(b.nome, Modifier.weight(1f), {
-                        Som.apertaBuzina(ctx, b.id)
-                        prefs.edit().putString(ConexaoService.PREF_BUZINA_CEL, b.id).apply()
+                        Som.apertaBuzina(ctx, b.chave)
+                        prefs.edit().putString(ConexaoService.PREF_BUZINA_CEL, b.chave).apply()
                     }, { Som.soltaBuzina() })
                 }
                 if (par.size == 1) Box(Modifier.weight(1f))

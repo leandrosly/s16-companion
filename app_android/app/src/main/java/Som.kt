@@ -68,6 +68,7 @@ object Som {
         "h_partida2" to R.raw.h_partida2, "h_desliga" to R.raw.h_desliga,
         "b_ahooga" to R.raw.b_ahooga, "b_vintage" to R.raw.b_vintage, "b_mustang" to R.raw.b_mustang,
         "b_mega" to R.raw.b_mega, "b_trem" to R.raw.b_trem, "b_bulb" to R.raw.b_bulb, "b_bici" to R.raw.b_bici,
+        "p_pneu1" to R.raw.p_pneu1, "p_pneu2" to R.raw.p_pneu2,
     )
 
     fun iniciar(ctx: Context) {
@@ -128,7 +129,7 @@ object Som {
     fun soltaBuzina() { if (iniciado) manda { it.soltaBuzina() } }
 
     /** Buzina rapida (botao da notificacao): toca o ataque, um pedaco do laco e o final. */
-    fun buzinaRapida(ctx: Context, id: String = BUZINAS[0].id) {
+    fun buzinaRapida(ctx: Context, id: String = BUZINAS[0].chave) {
         iniciar(ctx)
         manda { it.apertaBuzina(id) }
         manda { it.soltaBuzina() }

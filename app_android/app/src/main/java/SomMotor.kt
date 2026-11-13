@@ -273,40 +273,6 @@ class Geradas(val sr: Float) {
     val v8 = pulso(0.1f, 120f, 55f, 0.02f, 0.5f)
     val dt = pulso(0.06f, 320f, 170f, 0.01f, 0.8f, ringF = 1450f, ringAmt = 0.35f, lpK = 0.4f)
     val pop = pulso(0.05f, 200f, 90f, 0.007f, 1.4f, lpK = 0.6f)
-    /** Buzina de duas notas ("ôh-éh"): dois ciclos iguais (o 2o e o laco) + um final curto. */
-    val duasNotas = buzinaDuasNotas()
-
-    private fun buzinaDuasNotas(): Amostra {
-        val nota = 0.5f                         // segundos por nota
-        val grave = 440f; val agudo = 587.33f   // la e re acima: a quarta das buzinas de duas notas
-        val ciclo = (2 * nota * sr).toInt()
-        val rabo = (0.15f * sr).toInt()
-        val n = 2 * ciclo + rabo
-        val d = FloatArray(n)
-        var fase = 0.0
-        var f = grave
-        val kf = 1f - exp(-1f / (0.008f * sr))  // a membrana desliza ~8 ms entre as notas
-        val bp = Filtro(Filtro.FAIXA, 1400f, 0.9f); bp.ajusta(sr)
-        val lp = Filtro(Filtro.PB, 4200f); lp.ajusta(sr)
-        for (i in 0 until n) {
-            val t = i / sr
-            val alvo = if (i >= 2 * ciclo) agudo else if (i % ciclo < ciclo / 2) grave else agudo
-            f += (alvo - f) * kf
-            val fv = f * (1f + 0.004f * sin(DOIS_PI * 5.5 * t).toFloat())
-            fase += fv / sr
-            if (fase >= 1.0) fase -= 1.0
-            // som de corneta: pulso estreito (rico em harmonicos) e um formante
-            var x = if (fase < 0.18) 1f else -0.22f
-            x = bp.proc(x) * 1.6f + lp.proc(x) * 0.35f
-            var env = min(1f, t / 0.015f)
-            if (i >= 2 * ciclo) env *= exp(-(i - 2 * ciclo) / (0.03f * sr))
-            d[i] = tanh(x * 1.4f) * 0.75f * env
-        }
-        val media = d.copyOfRange(ciclo, 2 * ciclo).average().toFloat()        // tira o nivel DC
-        for (i in 0 until n) d[i] -= media * min(1f, i / (0.015f * sr)) * (if (i >= 2 * ciclo) exp(-(i - 2 * ciclo) / (0.03f * sr)) else 1f)
-        return Amostra(d, sr.toInt())
-    }
-
     private fun ruidoNorm(tipo: Char): FloatArray {
         val n = (sr * 4).toInt()
         val d = FloatArray(n)
@@ -402,7 +368,13 @@ val MOTORES: List<DefMotor> = listOf(
         "Zumbido grave de duas notas, ar passando e um propulsor que só aparece quando acelera. Com eco."),
 )
 
-class Buzina(val id: String, val nome: String, val ls: Double? = null, val le: Double? = null)
+/**
+ * Buzina gravada. ls/le: trecho que fica em laco enquanto segura (ao soltar, toca o resto).
+ * soltaTaxa: "fon-fon de 2 tons": um fon ao apertar e outro, nesta velocidade (outro tom), ao soltar.
+ * chave: identificador do botao (o id e o da gravacao; duas buzinas podem usar a mesma).
+ */
+class Buzina(val id: String, val nome: String, val ls: Double? = null, val le: Double? = null,
+             val soltaTaxa: Float? = null, val chave: String = id)
 
 val BUZINAS: List<Buzina> = listOf(
     Buzina("b_ahooga", "Ahooga", 0.48104, 1.11233),
@@ -411,7 +383,7 @@ val BUZINAS: List<Buzina> = listOf(
     Buzina("b_mega", "Mega buzina", 0.72958, 2.20471),
     Buzina("b_trem", "Trem", 1.43725, 3.742),
     Buzina("b_bulb", "Fon-fon"),
-    Buzina("b_duas", "Ôh-éh", 1.0, 2.0),
+    Buzina("b_bulb", "Fon-fon 2 tons", soltaTaxa = 1.19f, chave = "b_bulb2"),
     Buzina("b_bici", "Bicicleta"),
 )
 
@@ -909,35 +881,33 @@ class Compressor(private val sr: Float) {
 // =====================================================================================
 //  Pneu cantando nas freadas fortes (vale para todos os motores)
 // =====================================================================================
-class Pneu(private val sr: Float, g: Geradas) {
-    private val o = Osc('w', sr); private val o2 = Osc('s', sr); private val vib = Osc('s', sr)
-    private val bp = Filtro(Filtro.FAIXA, 2400f, 6f)
-    private val nz = Laco(g.branco2, (0.3f * sr).toInt()); private val bpN = Filtro(Filtro.FAIXA, 2800f, 2f)
-    private val f = Suave(1250f)
+class Pneu(private val sr: Float, sons: Map<String, Amostra>) {
+    // duas gravacoes de pneu cantando (p_pneu1, p_pneu2), cada uma em laco sem emenda, tocando juntas
+    // em velocidades um pouco diferentes (para nao soar repetido). O volume e o tom seguem a forca da freada.
+    private val pesos = floatArrayOf(0.6f, 0.45f)
+    private val vozes = listOfNotNull(sons["p_pneu1"], sons["p_pneu2"]).mapIndexed { i, a ->
+        Voz(a, sr).apply { laco = true; lsA = 0.0; leA = a.dados.size.toDouble(); pos = a.dados.size * 0.37 * i; ganho.ja(pesos[i]) }
+    }
+    private val tmp = FloatArray(BLOCO)
     private val ganho = Suave(0f)
-    private var deriva = 0f
+    private var t = 0f
     var ativo = true
 
     fun update(v: Float, a: Float, dt: Float) {
-        val forca = clampf((-a - 9f) / 10f, 0f, 1f) * clampf((v - 6f) / 8f, 0f, 1f)
-        val alvo = if (ativo) forca * 0.35f else 0f
-        ganho.para(alvo, if (alvo > ganho.valor) 0.04f else 0.12f)
-        deriva += ((rnd() - 0.5f) * 900f - deriva) * min(1f, dt * 3f)        // o tom passeia
-        f.para(clampf(950f + v * 12f + deriva * 0.3f, 700f, 2200f), 0.05f)
+        val forca = clampf((-a - 9f) / 10f, 0f, 1f) * clampf((v - 3f) / 5f, 0f, 1f)
+        val alvo = if (ativo) forca else 0f
+        ganho.para(alvo, if (alvo > ganho.valor) 0.05f else 0.12f)
+        t += dt
+        vozes.forEachIndexed { i, z -> z.taxa.para(0.95f + 0.1f * forca + 0.03f * sin(t * (1.3f + i * 0.7f)), 0.1f) }
     }
 
     fun soma(l: FloatArray, r: FloatArray, n: Int) {
         val g0 = ganho.valor; val g1 = ganho.avanca(n, sr)
-        val fr = f.avanca(n, sr)
         if (g0 < 1e-5f && g1 < 1e-5f) return
-        bp.f = fr * 2f; bp.ajusta(sr); bpN.ajusta(sr)
+        java.util.Arrays.fill(tmp, 0, n, 0f)
+        for (z in vozes) z.soma(tmp, null, n)
         val dg = (g1 - g0) / n; var g = g0
-        for (i in 0 until n) {
-            g += dg
-            val ff = fr * (1f + 0.025f * vib.prox(7f))
-            val y = (bp.proc(o.prox(ff)) * 1.5f + o2.prox(ff) * 0.5f + bpN.proc(nz.prox()) * 0.3f) * g
-            l[i] += y; r[i] += y
-        }
+        for (i in 0 until n) { g += dg; val y = tmp[i] * g; l[i] += y; r[i] += y }
     }
 }
 
@@ -946,8 +916,8 @@ class Pneu(private val sr: Float, g: Geradas) {
 // =====================================================================================
 class Mesa(val sr: Float, sonsGravados: Map<String, Amostra>) {
     private val geradas = Geradas(sr)
-    private val sons: Map<String, Amostra> = sonsGravados + ("b_duas" to geradas.duasNotas)
-    private val pneu = Pneu(sr, geradas)
+    private val sons: Map<String, Amostra> = sonsGravados
+    private val pneu = Pneu(sr, sonsGravados)
     private val cmds = ConcurrentLinkedQueue<(Mesa) -> Unit>()
     /** Executa no proximo bloco, na thread do audio. */
     fun manda(c: (Mesa) -> Unit) { cmds.add(c) }
@@ -1036,14 +1006,15 @@ class Mesa(val sr: Float, sonsGravados: Map<String, Amostra>) {
     }
 
     /** Aperta uma buzina; as que tem laco tocam ate soltar. */
-    fun apertaBuzina(id: String) {
-        val b = BUZINAS.firstOrNull { it.id == id } ?: return
-        val a = sons[id] ?: return
+    /** chave: a Buzina.chave do botao. */
+    fun apertaBuzina(chave: String) {
+        val b = BUZINAS.firstOrNull { it.chave == chave } ?: return
+        val a = sons[b.id] ?: return
         soltaBuzina()
         val v = Voz(a, sr)
         if (b.ls != null && b.le != null) v.lacoEm(b.ls, b.le)
         buzinas.add(v)
-        if (b.ls != null) { buzSegura = v; buzSeguraDef = b; buzSeguraT = 0.0 }
+        if (b.ls != null || b.soltaTaxa != null) { buzSegura = v; buzSeguraDef = b; buzSeguraT = 0.0 }
     }
 
     fun soltaBuzina() {
@@ -1051,6 +1022,15 @@ class Mesa(val sr: Float, sonsGravados: Map<String, Amostra>) {
         val b = buzSeguraDef ?: return
         buzSegura = null; buzSeguraDef = null
         val a = sons[b.id] ?: return
+        if (b.soltaTaxa != null) {
+            // o segundo fon (o ar voltando), em outro tom; o primeiro e cortado de leve
+            val esp = (max(0.0, 0.13 - buzSeguraT) * sr).toInt()
+            val volta = Voz(a, sr)
+            volta.taxa.ja(b.soltaTaxa); volta.atraso = esp
+            buzinas.add(volta)
+            v.sai(esp, (0.02 * sr).toInt())
+            return
+        }
         val espera = max(0.0, b.ls!! - buzSeguraT)                // pelo menos o ataque inteiro
         val esp = (espera * sr).toInt()
         val x = (0.025 * sr).toInt()
