@@ -1,4 +1,4 @@
-// VERSAO: c3v2-202611112300
+// VERSAO: c3v2-202611221130
 /*
   =====================================================================
    PONTE C3 v2 - S16 Companion: ponte BLE + radio 433 + luz de freio + fitas + SOM
@@ -7,13 +7,13 @@
   >>> v2 (11/11): pinos da placa nova + som (PCM5102A -> PAM8302 -> alto-falante) <<<
     MAPA DE PINOS DA PLACA NOVA (mudou tudo em relacao a v1, que era em fios):
       GPIO0 BCK  | GPIO1 DIN  | GPIO2 LCK      -> PCM5102A (I2S)
-      GPIO3 AMP_EN (liga o PAM8302 so quando tem som)
+      GPIO3 AMP_EN (pelo D2 no SD do amplificador da roda: liga so quando tem som)
       GPIO4 RX 433 (SRX882S)  | GPIO5 TX 433 (STX882)
-      GPIO6 farol direito | GPIO7 farol esquerdo | GPIO10 traseira direita
-      GPIO20 traseira esquerda | GPIO21 topo     -> fitas, pelo 74HCT245 (5 V)
+      GPIO21 traseira esquerda (J3) | GPIO20 farol esquerdo (J4) | GPIO10 topo (J5)
+      GPIO7 farol direito (J6) | GPIO6 traseira direita (J7) -> fitas, pelo 74HCT245 (5 V)
       GPIO8 LED da placa | GPIO9 botao BOOT | livres: nenhum
       Obs.: o GPIO21 e o TX da UART0: o carregador de boot do chip escreve nele ao ligar,
-      entao a fita do topo pode piscar um instante no boot. Depois fica normal.
+      entao a traseira esquerda pode piscar um instante no boot. Depois fica normal.
     SOM (som_c3.h + sons_c3.h): tarefa propria do FreeRTOS, nada atrasa o audio.
       Motores: 0 Eletrico VESS | 1 Harley estudio. Buzinas gravadas (0..7). Pneu cantando nas freadas.
       Segue a velocidade da roda (quadro A9). Serial: som | som on/off | som motor 0/1 | som vol 0-100
@@ -54,11 +54,13 @@
   em quadros proprios na FFE1; o C3 manda o estado so para ele. Os apps nao veem.
 
   FITAS DE LED DA RODA (etapa 4, 31/10) - o DATA de cada fita vem do C3:
-    topo (64 LEDs, "U" da frente-esq. ate a frente-dir.)  -> GPIO21  (v1: GPIO5)
-    traseira esquerda (23, pixel 0 em cima)               -> GPIO20  (v1: GPIO6)
-    traseira direita  (23, pixel 0 em cima)               -> GPIO10  (v1: GPIO7)
-    anel do farol esquerdo (16)                           -> GPIO7   (v1: GPIO10)
-    anel do farol direito  (16)                           -> GPIO6   (v1: GPIO20)
+    topo (64 LEDs, "U" da frente-esq. ate a frente-dir.)  -> GPIO10 / J5  (v1: GPIO5)
+    traseira esquerda (23, pixel 0 em cima)               -> GPIO21 / J3  (v1: GPIO6)
+    traseira direita  (23, pixel 0 em cima)               -> GPIO6  / J7  (v1: GPIO7)
+    anel do farol esquerdo (16)                           -> GPIO20 / J4  (v1: GPIO10)
+    anel do farol direito  (16)                           -> GPIO7  / J6  (v1: GPIO20)
+    (22/11: fios dispostos topo no meio, farois ao lado, traseiras nas pontas;
+     se esquerda/direita ficar invertido, troca so os pares no FITA_PINO)
     (+5V e GND das fitas continuam vindo da roda; DATA desconectado da placa
      da roda. Hoje 3,3 V direto; depois pelo 74HCT245.)
     O C3 tem so 2 canais RMT e um e do 433: as 5 fitas REVEZAM o outro canal
@@ -89,7 +91,7 @@
 #include "soc/gpio_sig_map.h"
 #include "som_c3.h"           // som: motores, buzinas e pneu no PCM5102A (v2)
 
-static const char* VERSAO = "c3v2-202611112300";
+static const char* VERSAO = "c3v2-202611221130";
 
 // ================= Configuracao (muda pelo Serial: "NOME = valor"; salva na flash) =================
 static String NAME_FILTER = "KS";
@@ -830,7 +832,7 @@ static void radio433Setup() {
 // ================= FITAS DE LED DA RODA (etapa 4) =================
 // WS2812 (ordem G R B), 5 V, ~721 kHz na roda; aqui usamos os tempos padrao (800 kHz).
 enum { FITA_TOPO = 0, FITA_TRAS_E, FITA_TRAS_D, FITA_FAROL_E, FITA_FAROL_D, N_FITAS };
-static const int   FITA_PINO[N_FITAS] = { 21, 20, 10, 7, 6 };   // placa nova (v1: 5, 6, 7, 10, 20)
+static const int   FITA_PINO[N_FITAS] = { 10, 21, 6, 20, 7 };   // placa nova: J5, J3, J7, J4, J6 (v1: 5, 6, 7, 10, 20)
 static const int   FITA_NPX[N_FITAS]  = { 64, 23, 23, 16, 16 };
 static const char* FITA_NOME[N_FITAS] = { "topo", "traseira esq", "traseira dir", "farol esq", "farol dir" };
 static const int   FITA_MAXPX = 64;
