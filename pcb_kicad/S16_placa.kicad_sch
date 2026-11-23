@@ -926,6 +926,26 @@
 						(type background)
 					)
 				)
+				(text "IO8 (sem pino)"
+					(at 9.144 1.27 0)
+					(effects
+						(font
+							(size 1.27 1.27)
+							(italic yes)
+						)
+						(justify right)
+					)
+				)
+				(text "IO9 (sem pino)"
+					(at 9.144 -1.27 0)
+					(effects
+						(font
+							(size 1.27 1.27)
+							(italic yes)
+						)
+						(justify right)
+					)
+				)
 			)
 			(symbol "ESP32-C3_SuperMini_1_1"
 				(pin passive line
@@ -983,7 +1003,7 @@
 					)
 				)
 				(pin passive line
-					(at -12.7 1.27 0)
+					(at 12.7 8.89 180)
 					(length 2.54)
 					(name "IO4"
 						(effects
@@ -1001,7 +1021,7 @@
 					)
 				)
 				(pin passive line
-					(at -12.7 -1.27 0)
+					(at 12.7 6.35 180)
 					(length 2.54)
 					(name "IO3"
 						(effects
@@ -1019,7 +1039,7 @@
 					)
 				)
 				(pin passive line
-					(at -12.7 -3.81 0)
+					(at 12.7 3.81 180)
 					(length 2.54)
 					(name "IO2"
 						(effects
@@ -1037,7 +1057,7 @@
 					)
 				)
 				(pin passive line
-					(at -12.7 -6.35 0)
+					(at 12.7 -3.81 180)
 					(length 2.54)
 					(name "IO1"
 						(effects
@@ -1055,7 +1075,7 @@
 					)
 				)
 				(pin passive line
-					(at -12.7 -8.89 0)
+					(at 12.7 -6.35 180)
 					(length 2.54)
 					(name "IO0"
 						(effects
@@ -1073,7 +1093,7 @@
 					)
 				)
 				(pin passive line
-					(at 12.7 8.89 180)
+					(at -12.7 1.27 0)
 					(length 2.54)
 					(name "IO5"
 						(effects
@@ -1091,7 +1111,7 @@
 					)
 				)
 				(pin passive line
-					(at 12.7 6.35 180)
+					(at -12.7 -1.27 0)
 					(length 2.54)
 					(name "IO6"
 						(effects
@@ -1109,7 +1129,7 @@
 					)
 				)
 				(pin passive line
-					(at 12.7 3.81 180)
+					(at -12.7 -3.81 0)
 					(length 2.54)
 					(name "IO7"
 						(effects
@@ -1127,43 +1147,7 @@
 					)
 				)
 				(pin passive line
-					(at 12.7 1.27 180)
-					(length 2.54)
-					(name "IO8"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "12"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at 12.7 -1.27 180)
-					(length 2.54)
-					(name "IO9"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "13"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at 12.7 -3.81 180)
+					(at -12.7 -6.35 0)
 					(length 2.54)
 					(name "IO10"
 						(effects
@@ -1181,7 +1165,7 @@
 					)
 				)
 				(pin passive line
-					(at 12.7 -6.35 180)
+					(at -12.7 -8.89 0)
 					(length 2.54)
 					(name "IO20"
 						(effects
@@ -2182,20 +2166,12 @@
 		(uuid "76d0b963-4dae-46f9-ad93-2d1cc390f6b0")
 	)
 	(no_connect
-		(at 148.59 134.62)
-		(uuid "8684c208-2bf2-466a-aa1f-c8ff55db48d8")
-	)
-	(no_connect
 		(at 223.52 146.05)
 		(uuid "b80887e2-6834-4e13-b671-a6446b002cef")
 	)
 	(no_connect
 		(at 223.52 148.59)
 		(uuid "bb665aed-1249-4e95-8f15-8b86d2198afe")
-	)
-	(no_connect
-		(at 148.59 137.16)
-		(uuid "d63b267e-b63f-4aae-8394-1421bdc09461")
 	)
 	(wire
 		(pts
@@ -3157,7 +3133,7 @@
 		)
 		(uuid "049c2424-28ca-4b31-a57d-ab8043609cc9")
 	)
-	(label "LED_TRAS_E"
+	(label "LED_FAROL_E"
 		(at 151.13 142.24 0)
 		(effects
 			(font
@@ -3167,7 +3143,7 @@
 		)
 		(uuid "06e3b488-f5f0-4468-b297-63dfc00b5bf2")
 	)
-	(label "LED_TRAS_D"
+	(label "LED_TOPO"
 		(at 151.13 139.7 0)
 		(effects
 			(font
@@ -3187,7 +3163,7 @@
 		)
 		(uuid "0a2fa58f-a9c0-4db3-b155-2c95e57fb330")
 	)
-	(label "TRAS_D_5V"
+	(label "TOPO_5V"
 		(at 226.06 135.89 0)
 		(effects
 			(font
@@ -3287,7 +3263,7 @@
 		)
 		(uuid "1c8a4b40-a1ac-4526-bebe-5d72a2bb0965")
 	)
-	(label "FITA_TRAS_E"
+	(label "FITA_FAROL_E"
 		(at 314.96 127 180)
 		(effects
 			(font
@@ -3307,7 +3283,7 @@
 		)
 		(uuid "23f2ff45-b981-4973-9754-7476b3c7c373")
 	)
-	(label "FAROL_D_5V"
+	(label "TRAS_D_5V"
 		(at 266.7 156.21 180)
 		(effects
 			(font
@@ -3337,7 +3313,7 @@
 		)
 		(uuid "26e22bb0-fea4-4863-953e-3509b7bc4604")
 	)
-	(label "FITA_FAROL_E"
+	(label "FITA_FAROL_D"
 		(at 281.94 146.05 0)
 		(effects
 			(font
@@ -3377,7 +3353,7 @@
 		)
 		(uuid "400915c4-f0ef-41e3-a36b-562a8606ed69")
 	)
-	(label "LED_TOPO"
+	(label "LED_TRAS_E"
 		(at 195.58 130.81 180)
 		(effects
 			(font
@@ -3397,7 +3373,7 @@
 		)
 		(uuid "429763bb-faaa-423b-a4d1-412dcf3c18f9")
 	)
-	(label "FITA_FAROL_D"
+	(label "FITA_TRAS_D"
 		(at 281.94 156.21 0)
 		(effects
 			(font
@@ -3427,7 +3403,7 @@
 		)
 		(uuid "4a3fbf64-fdca-4b0e-b89b-1c41222b8880")
 	)
-	(label "TOPO_5V"
+	(label "TRAS_E_5V"
 		(at 266.7 116.84 180)
 		(effects
 			(font
@@ -3447,7 +3423,7 @@
 		)
 		(uuid "4f32928e-eb66-41ca-b9c8-16ddd4dbfd94")
 	)
-	(label "FITA_TOPO"
+	(label "FITA_TRAS_E"
 		(at 281.94 116.84 0)
 		(effects
 			(font
@@ -3467,7 +3443,7 @@
 		)
 		(uuid "55398e7e-6b3d-4ba9-a03c-7bf1a3ad12e0")
 	)
-	(label "FITA_TOPO"
+	(label "FITA_TRAS_E"
 		(at 314.96 116.84 180)
 		(effects
 			(font
@@ -3477,7 +3453,7 @@
 		)
 		(uuid "554e2fc3-cc67-4c08-9f98-e6caca945b44")
 	)
-	(label "LED_FAROL_D"
+	(label "LED_TRAS_D"
 		(at 195.58 140.97 180)
 		(effects
 			(font
@@ -3487,7 +3463,7 @@
 		)
 		(uuid "5748470d-2e51-4e81-8017-28e0c04c655c")
 	)
-	(label "LED_TRAS_D"
+	(label "LED_TOPO"
 		(at 195.58 135.89 180)
 		(effects
 			(font
@@ -3567,7 +3543,7 @@
 		)
 		(uuid "6ccd6b1d-e8c3-41f5-91f9-4ba10e547842")
 	)
-	(label "LED_FAROL_D"
+	(label "LED_TRAS_D"
 		(at 151.13 129.54 0)
 		(effects
 			(font
@@ -3587,7 +3563,7 @@
 		)
 		(uuid "707fcffe-d45a-425d-83a6-298719b0311c")
 	)
-	(label "TRAS_E_5V"
+	(label "FAROL_E_5V"
 		(at 226.06 133.35 0)
 		(effects
 			(font
@@ -3607,7 +3583,7 @@
 		)
 		(uuid "77ac7dcf-a059-4980-9a7d-bd5159c74f89")
 	)
-	(label "FITA_FAROL_D"
+	(label "FITA_TRAS_D"
 		(at 314.96 156.21 180)
 		(effects
 			(font
@@ -3627,7 +3603,7 @@
 		)
 		(uuid "79486fc6-77e6-4e10-af42-6e7dc59b30e1")
 	)
-	(label "LED_TOPO"
+	(label "LED_TRAS_E"
 		(at 151.13 144.78 0)
 		(effects
 			(font
@@ -3637,7 +3613,7 @@
 		)
 		(uuid "81285e8b-8546-4bf6-b9a8-fb23d8b183f0")
 	)
-	(label "FAROL_D_5V"
+	(label "TRAS_D_5V"
 		(at 226.06 140.97 0)
 		(effects
 			(font
@@ -3647,7 +3623,7 @@
 		)
 		(uuid "857c49fa-e5db-4b02-8c8d-5543f4567ac9")
 	)
-	(label "FITA_FAROL_E"
+	(label "FITA_FAROL_D"
 		(at 314.96 146.05 180)
 		(effects
 			(font
@@ -3727,7 +3703,7 @@
 		)
 		(uuid "9fa674ae-6e52-4f13-b714-d44698a50381")
 	)
-	(label "TOPO_5V"
+	(label "TRAS_E_5V"
 		(at 226.06 130.81 0)
 		(effects
 			(font
@@ -3757,7 +3733,7 @@
 		)
 		(uuid "a54e53ae-9e04-4848-8410-c528f5ac54de")
 	)
-	(label "FITA_TRAS_D"
+	(label "FITA_TOPO"
 		(at 281.94 135.89 0)
 		(effects
 			(font
@@ -3767,7 +3743,7 @@
 		)
 		(uuid "a5fbf100-1bef-4a4a-a336-91b684a32d03")
 	)
-	(label "FITA_TRAS_D"
+	(label "FITA_TOPO"
 		(at 314.96 135.89 180)
 		(effects
 			(font
@@ -3797,7 +3773,7 @@
 		)
 		(uuid "b3326e97-bd09-4ea9-99e9-f405a3e1b443")
 	)
-	(label "FAROL_E_5V"
+	(label "FAROL_D_5V"
 		(at 226.06 138.43 0)
 		(effects
 			(font
@@ -3847,7 +3823,7 @@
 		)
 		(uuid "cc9776d9-c81c-4414-8b88-8d46be0e6e36")
 	)
-	(label "LED_FAROL_E"
+	(label "LED_FAROL_D"
 		(at 151.13 132.08 0)
 		(effects
 			(font
@@ -3857,7 +3833,7 @@
 		)
 		(uuid "d20d35ba-e7f6-4a4f-9e92-945d818a0883")
 	)
-	(label "TRAS_E_5V"
+	(label "FAROL_E_5V"
 		(at 266.7 127 180)
 		(effects
 			(font
@@ -3897,7 +3873,7 @@
 		)
 		(uuid "e4217bcf-2256-4a63-89a3-c1b61de4f4ab")
 	)
-	(label "LED_FAROL_E"
+	(label "LED_FAROL_D"
 		(at 195.58 138.43 180)
 		(effects
 			(font
@@ -3917,7 +3893,7 @@
 		)
 		(uuid "ef7f7cd8-f4af-484a-aaa0-9883ded1eaa8")
 	)
-	(label "TRAS_D_5V"
+	(label "TOPO_5V"
 		(at 266.7 135.89 180)
 		(effects
 			(font
@@ -3927,7 +3903,7 @@
 		)
 		(uuid "f331acc9-8a73-4e40-8bdd-a83306425d4e")
 	)
-	(label "LED_TRAS_E"
+	(label "LED_FAROL_E"
 		(at 195.58 133.35 180)
 		(effects
 			(font
@@ -3947,7 +3923,7 @@
 		)
 		(uuid "fa0a6b72-5df0-4866-b383-f5530748e1a8")
 	)
-	(label "FITA_TRAS_E"
+	(label "FITA_FAROL_E"
 		(at 281.94 127 0)
 		(effects
 			(font
@@ -3957,7 +3933,7 @@
 		)
 		(uuid "fb8bf52a-7cf3-435b-9606-b865106186d2")
 	)
-	(label "FAROL_E_5V"
+	(label "FAROL_D_5V"
 		(at 266.7 146.05 180)
 		(effects
 			(font
@@ -3988,7 +3964,7 @@
 				)
 			)
 		)
-		(property "Value" "Fio: fita traseira E"
+		(property "Value" "Fio: fita farol E"
 			(at 322.58 129.54 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4582,7 +4558,7 @@
 				)
 			)
 		)
-		(property "Value" "Fio: fita farol E"
+		(property "Value" "Fio: fita farol D"
 			(at 322.58 148.59 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4966,12 +4942,6 @@
 		(pin "11"
 			(uuid "504cd988-6889-4cf0-82b3-ec4257fd8bf3")
 		)
-		(pin "12"
-			(uuid "142040b8-b214-4176-9bb5-248c5e22fa49")
-		)
-		(pin "13"
-			(uuid "28ffe4ca-110a-48a2-a575-98611b3e0fec")
-		)
 		(pin "14"
 			(uuid "9c2fc030-ada6-4996-b8c8-38236384576c")
 		)
@@ -5086,7 +5056,7 @@
 				)
 			)
 		)
-		(property "Value" "Fio: fita topo"
+		(property "Value" "Fio: fita traseira E"
 			(at 322.58 119.38 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5698,7 +5668,7 @@
 				)
 			)
 		)
-		(property "Value" "1N4007"
+		(property "Value" "1N5819"
 			(at 247.65 80.01 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5929,7 +5899,7 @@
 				)
 			)
 		)
-		(property "Value" "Fio: fita farol D"
+		(property "Value" "Fio: fita traseira D"
 			(at 322.58 158.75 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6136,7 +6106,7 @@
 				)
 			)
 		)
-		(property "Value" "Fio: fita traseira D"
+		(property "Value" "Fio: fita topo"
 			(at 322.58 138.43 0)
 			(show_name no)
 			(do_not_autoplace no)
