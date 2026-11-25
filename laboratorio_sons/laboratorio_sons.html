@@ -216,6 +216,8 @@ const MOTORES = {
     desc: 'Um tom puro que <em>borbulha</em>: o volume pulsa rápido (o "pó-pó-pó" de desenho antigo) e a nota balança num vibrato. Acelerar sobe a nota e apressa as pulsadas; um segundo tom uma quinta acima entra com a carga, mais um sopro de ar e um eco curtinho.' },
   jetsons: { nome: 'Carro voador 2', sub: 'no estilo dos Jetsons', tipo: 'jetsons', un: '%', max: 100,
     desc: 'Montado a partir da análise das gravações: um zumbido grave e áspero (~70 Hz) que <em>tremula</em> umas 22 vezes por segundo, mais um apito com harmônicos que sobe da lenta (~350 Hz) até ~1,5 kHz conforme a velocidade, sempre deslizando devagar, como o motor "pegando giro" do desenho.' },
+  maquina: { nome: 'A Máquina', sub: 'Welcome to the Machine', tipo: 'maquina', un: '%', max: 100,
+    desc: 'Medido na gravação do fim de <em>Welcome to the Machine</em>: dois tons, um em f e outro ~1,22 f (12 dB mais baixo), com harmônicos que caem ~10 dB cada, e um <em>chiado forte</em> cortado em ~5 vezes o tom. O tom desliza de ~105 Hz parado até ~520 Hz a ~39 km/h (e continua subindo na mesma proporção acima disso), e o chiado sobe junto.' },
   arquivo: { nome: 'Arquivo de áudio', sub: 'sua gravação', tipo: 'arquivo', un: 'rpm',
     idle: 900, max: 6000, red: 5200, gears: [260, 132, 75, 58], up: 4600, down: 1900, loadRpm: 700,
     desc: 'Toca o seu loop <em>mais rápido ou mais devagar</em> conforme a rotação, como os jogos antigos de corrida. Mais rápido fica mais agudo e acelerado. Carregue o arquivo no quadro "Gravação própria".' },
@@ -616,6 +618,38 @@ function motorJetsons() {
   };
 }
 
+// ----- A Maquina: medida na gravacao do final de "Welcome to the Machine" -----
+// Dois tons com harmonicos caindo ~10 dB cada (A em f, B em ~1,22 f, 12 dB abaixo),
+// mais ruido forte com corte que acompanha o tom (~4,5 f). O tom sobe de ~105 Hz parado
+// ate ~520 Hz a ~39 km/h, com inercia (desliza, nao pula).
+function motorMaquina() {
+  const out = saida(0.17);
+  const ondaA = ctx.createPeriodicWave(new Float32Array(9), new Float32Array([0, 1, 0.30, 0.095, 0.035, 0.013, 0.0047, 0.002, 0.001]), { disableNormalization: true });
+  const ondaB = ctx.createPeriodicWave(new Float32Array(3), new Float32Array([0, 0.24, 0.042]), { disableNormalization: true });
+  const a = ctx.createOscillator(); a.setPeriodicWave(ondaA);
+  const b = ctx.createOscillator(); b.setPeriodicWave(ondaB);
+  const nz = ruidoLoop(), hp = filtro('highpass', 70, 0.5), lp1 = filtro('lowpass', 500, 0.6), lp2 = filtro('lowpass', 500, 0.6), gNz = ganho(1.7);
+  const tons = ganho(1);
+  a.connect(tons); b.connect(tons); tons.connect(out);
+  nz.connect(hp); hp.connect(lp1); lp1.connect(lp2); lp2.connect(gNz); gNz.connect(out);
+  const fontes = [a, b, nz];
+  fontes.forEach(o => o.start());
+  let f = 105;
+  return {
+    update(s) {
+      const t = ctx.currentTime, v = Math.min(s.v, 70);
+      const alvo = 105 + 10.6 * v + s.load * 25;                // 39 km/h ~ 520 Hz; acima continua subindo na mesma proporcao
+      f += (alvo - f) * Math.min(1, s.dt / 0.35);              // desliza
+      const r = 1.22 + 0.04 * clamp((250 - f) / 150, 0, 1);    // B fica um pouco mais longe no grave
+      a.frequency.setTargetAtTime(f, t, 0.03);
+      b.frequency.setTargetAtTime(f * r, t, 0.03);
+      lp1.frequency.setTargetAtTime(f * 5, t, 0.05); lp2.frequency.setTargetAtTime(f * 5, t, 0.05);
+      gNz.gain.setTargetAtTime(1.7 * (1.4 - 0.4 * clamp((f - 105) / 415, 0, 1)), t, 0.1);   // ruido um pouco mais forte no grave
+    },
+    parar() { desliga(out, fontes); }
+  };
+}
+
 function motorArquivo() {
   if (!BUF.arquivo) { $('#arqStatus').textContent = 'carregue um arquivo de áudio primeiro'; return { update() {}, parar() {} }; }
   const out = saida(0.9);
@@ -746,6 +780,7 @@ function criaMotor(id, ligando) {
   if (e.tipo === 'nave') return motorNave();
   if (e.tipo === 'voador') return motorVoador();
   if (e.tipo === 'jetsons') return motorJetsons();
+  if (e.tipo === 'maquina') return motorMaquina();
   return motorArquivo();
 }
 

@@ -366,6 +366,8 @@ val MOTORES: List<DefMotor> = listOf(
         "Ar passando e dois assobios afinados. A turbina tem inércia: demora pra subir e pra cair."),
     DefMotor("nave", "Nave", "hover espacial", "nave",
         "Zumbido grave de duas notas, ar passando e um propulsor que só aparece quando acelera. Com eco."),
+    DefMotor("maquina", "A Máquina", "Welcome to the Machine", "maquina",
+        "Medido no fim de Welcome to the Machine: dois tons (f e ~1,22 f) com harmônicos suaves e um chiado forte que abre junto. Sobe de ~105 Hz parado até ~520 Hz em ~39 km/h e continua subindo acima."),
 )
 
 /**
@@ -707,6 +709,46 @@ class MotorNave(sr: Float, g: Geradas) : Motor(sr, 0.7f) {
     }
 }
 
+// ----- A Maquina (medida na gravacao do fim de "Welcome to the Machine") -----
+// Tom A em f com harmonicos caindo ~10 dB cada; tom B em ~1,22 f, 12 dB abaixo; ruido forte
+// cortado em ~5 f. f vai de ~105 Hz parado a ~520 Hz em ~39 km/h e continua subindo acima.
+private val MAQ_HARM = floatArrayOf(1f, 0.30f, 0.095f, 0.035f, 0.013f, 0.0047f, 0.002f, 0.001f)
+class MotorMaquina(sr: Float, g: Geradas) : Motor(sr, 0.17f) {
+    private var faseA = 0.0; private var faseB = 0.0
+    private val nz = Laco(g.branco2, 0)
+    private val hp = Filtro(Filtro.PA, 70f, 0.5f); private val lp1 = Filtro(Filtro.PB, 500f, 0.6f); private val lp2 = Filtro(Filtro.PB, 500f, 0.6f)
+    private val fr = Suave(105f); private val gNz = Suave(2.38f)
+    private var f = 105f
+
+    override fun update(s: EstadoMotor) {
+        val v = min(s.v, 70f)
+        val alvo = 105f + 10.6f * v + s.load * 25f
+        f += (alvo - f) * min(1f, s.dt / 0.35f)                 // desliza
+        fr.para(f, 0.03f)
+        gNz.para(1.7f * (1.4f - 0.4f * clampf((f - 105f) / 415f, 0f, 1f)), 0.1f)
+    }
+
+    override fun gera(n: Int) {
+        val f0 = fr.valor; val f1 = fr.avanca(n, sr)
+        lp1.f = f1 * 5f; lp2.f = f1 * 5f
+        hp.ajusta(sr); lp1.ajusta(sr); lp2.ajusta(sr)
+        val r = 1.22f + 0.04f * clampf((250f - f1) / 150f, 0f, 1f)
+        val g0 = gNz.valor; val g1 = gNz.avanca(n, sr)
+        for (i in 0 until n) {
+            val k = i.toFloat() / n
+            val fq = f0 + (f1 - f0) * k
+            faseA += fq / sr; if (faseA >= 1.0) faseA -= 1.0
+            faseB += fq * r / sr; if (faseB >= 1.0) faseB -= 1.0
+            var a = 0f
+            for (h in MAQ_HARM.indices) a += MAQ_HARM[h] * Seno.s((faseA * (h + 1)) % 1.0)
+            val b = 0.24f * Seno.s(faseB) + 0.042f * Seno.s((faseB * 2) % 1.0)
+            val ru = lp2.proc(lp1.proc(hp.proc(nz.prox()))) * (g0 + (g1 - g0) * k)
+            val o = a + b + ru
+            ml[i] = o; mr[i] = o
+        }
+    }
+}
+
 // ----- Explosoes sintetizadas (Harley V2, V8, 2T) -----
 class MotorPulso(sr: Float, private val e: DefMotor, g: Geradas) : Motor(sr, e.gain) {
     private val buf = when (e.pulse) { "v8" -> g.v8; "dt" -> g.dt; else -> g.thump }
@@ -975,6 +1017,7 @@ class Mesa(val sr: Float, sonsGravados: Map<String, Amostra>) {
         "pulso" -> MotorPulso(sr, d, geradas)
         "voador" -> MotorVoador(sr, geradas)
         "tron" -> MotorTron(sr)
+        "maquina" -> MotorMaquina(sr, geradas)
         "jato" -> MotorJato(sr, geradas)
         else -> MotorNave(sr, geradas)
     }
