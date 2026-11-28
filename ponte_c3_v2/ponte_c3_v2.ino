@@ -1,4 +1,4 @@
-// VERSAO: c3v2-202611272300
+// VERSAO: c3v2-202611272320
 /*
   =====================================================================
    PONTE C3 v2 - S16 Companion: ponte BLE + radio 433 + luz de freio + fitas + SOM
@@ -16,8 +16,8 @@
       Obs.: o GPIO21 e o TX da UART0: o carregador de boot do chip escreve nele ao ligar,
       entao a traseira esquerda pode piscar um instante no boot. Depois fica normal.
     SOM (som_c3.h + sons_c3.h): tarefa propria do FreeRTOS, nada atrasa o audio.
-      Motores: 0 Eletrico VESS | 1 Harley estudio. Buzinas gravadas (0..7). Pneu cantando nas freadas.
-      Segue a velocidade da roda (quadro A9). Serial: som | som on/off | som motor 0/1 | som vol 0-100
+      Motores: 0 Eletrico VESS | 1 Harley estudio | 2 A Maquina. Buzinas gravadas (0..7). Pneu cantando nas freadas.
+      Segue a velocidade da roda (quadro A9). Serial: som | som on/off | som motor 0/1/2 | som vol 0-100
       | som buz 0-7 | som pneu on/off | som estouros on/off | som sim <km/h> | som sim off
       Canal (app/display): C3_SOM 12 (0/1) | C3_SOM_MOTOR 13 | C3_SOM_VOL 14 (0-100)
       | C3_SOM_BUZ 15 (0x80|indice = aperta, 0 = solta) | C3_SOM_PNEU 16 (0/1)
@@ -92,7 +92,7 @@
 #include "soc/gpio_sig_map.h"
 #include "som_c3.h"           // som: motores, buzinas e pneu no PCM5102A (v2)
 
-static const char* VERSAO = "c3v2-202611272300";
+static const char* VERSAO = "c3v2-202611272320";
 
 // ================= Configuracao (muda pelo Serial: "NOME = valor"; salva na flash) =================
 static String NAME_FILTER = "KS";
@@ -1049,14 +1049,14 @@ static void somSetup() {
 static void somLoop() {
   if (somSoltaEm && millis() > somSoltaEm) { somSoltaEm = 0; som::buzina(0, false); }
 }
-static const char* SOM_MOTOR_NOME[2] = { "Eletrico VESS", "Harley estudio" };
+static const char* SOM_MOTOR_NOME[3] = { "Eletrico VESS", "Harley estudio", "A Maquina" };
 static void somComando(String a) {
   a.trim(); a.toLowerCase();
   if (a == "on" || a == "off") { somLigado = a == "on"; som::ligar(somLigado); somGuardar(); }
   else if (a.startsWith("motor")) {
     String m = a.substring(5); m.trim();
-    int id = (m == "vess") ? 0 : (m == "harley") ? 1 : m.toInt();
-    if (id >= 0 && id <= 1) { somMotor = id; som::motor(id); somGuardar(); }
+    int id = (m == "vess") ? 0 : (m == "harley") ? 1 : (m == "maquina") ? 2 : m.toInt();
+    if (id >= 0 && id <= 2) { somMotor = id; som::motor(id); somGuardar(); }
   }
   else if (a.startsWith("vol")) { somVol = constrain(a.substring(3).toInt(), 0, 100); som::volume(somVol); somGuardar(); }
   else if (a.startsWith("buz")) {
@@ -1074,14 +1074,14 @@ static void somComando(String a) {
     return;
   }
   else if (a.length()) {
-    Serial.println("use: som | som on/off | som motor 0/1 (vess/harley) | som vol 0-100 | som buz 0-7 | som pneu on/off");
+    Serial.println("use: som | som on/off | som motor 0/1/2 (vess/harley/maquina) | som vol 0-100 | som buz 0-7 | som pneu on/off");
     Serial.println("     som estouros on/off | som sim <km/h> | som sim off");
     Serial.println("     buzinas: 0 Ahooga 1 Carro antigo 2 Mustang 3 Mega 4 Trem 5 Fon-fon 6 Bicicleta 7 Fon-fon 2 tons");
     return;
   }
   delay(30);                                    // da tempo da tarefa do som aplicar antes de mostrar
   Serial.printf("[som] %s | motor %d (%s) | vol %d%% | pneu %s | estouros %s | tocando %s | %.1f km/h | %.0f %s | CPU do som %lu%%\n",
-                som::estLigado ? "LIGADO" : "desligado", som::estMotor, SOM_MOTOR_NOME[som::estMotor % 2], som::estVol,
+                som::estLigado ? "LIGADO" : "desligado", som::estMotor, SOM_MOTOR_NOME[som::estMotor % 3], som::estVol,
                 somPneu ? "on" : "off", somEstouros ? "on" : "off", som::estTocando ? "sim" : "nao", (float)som::estV,
                 (float)som::estRpm, som::estMotor == 1 ? "rpm" : "%", (unsigned long)som::estCarga);
 }
@@ -1108,7 +1108,7 @@ static void canalLoop() {
         break;
       case C3_LED_FLAGS:  ledPiscas = cc.arg & 1; ledFreio = cc.arg & 2; fitaGuardar(); break;
       case C3_SOM:        somLigado = cc.arg != 0; som::ligar(somLigado); somGuardar(); break;
-      case C3_SOM_MOTOR:  if (cc.arg <= 1) { somMotor = cc.arg; som::motor(somMotor); somGuardar(); } break;
+      case C3_SOM_MOTOR:  if (cc.arg <= 2) { somMotor = cc.arg; som::motor(somMotor); somGuardar(); } break;
       case C3_SOM_VOL:    somVol = min((int)cc.arg, 100); som::volume(somVol); somGuardar(); break;
       case C3_SOM_BUZ:    if (cc.arg & 0x80) som::buzina(cc.arg & 0x7F, true); else som::buzina(0, false); break;
       case C3_SOM_PNEU:   somPneu = cc.arg != 0; som::pneu(somPneu); somGuardar(); break;
@@ -1280,7 +1280,7 @@ static void handleSerialConsole() {
       Serial.println("comandos: status | config | config padrao | NOME = valor (ex.: DUMP_HEX = true, FREIO_AUTO = off)");
       Serial.println("          433 e|d (piscas) | 433 x|l|v|p (luz base) | 433 teste | 433 raw <hexa> | buz <cmd> | freio");
       Serial.println("          led | led modo 0-4 | led cor R G B | led brilho 0-60 | led off | led piscas on/off | led freio on/off | led teste");
-      Serial.println("          som | som on/off | som motor 0/1 | som vol 0-100 | som buz 0-7 | som pneu on/off | som sim <km/h>|off");
+      Serial.println("          som | som on/off | som motor 0/1/2 | som vol 0-100 | som buz 0-7 | som pneu on/off | som sim <km/h>|off");
       Serial.println("          t <cmd> <pos 2-15> <valor> (hexa, ex.: t 88 2 0 = buzina) | raw <20 bytes hexa>");
       continue;
     }

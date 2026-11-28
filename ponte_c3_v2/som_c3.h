@@ -8,7 +8,7 @@
 //    (sons_c3.h, ~1,1 MB).
 //  * roda numa tarefa propria do FreeRTOS: o loop(), o BLE e o Serial nao conseguem atrasar o som.
 //
-// Motores: 0 = Eletrico VESS (sintetizado, como no app)  1 = Harley estudio (gravacoes)
+// Motores: 0 = Eletrico VESS (sintetizado, como no app)  1 = Harley estudio (gravacoes)  2 = A Maquina (sintetizado)
 // Buzinas (indice): 0 Ahooga, 1 Carro antigo, 2 Mustang, 3 Mega, 4 Trem, 5 Fon-fon, 6 Bicicleta, 7 Fon-fon 2 tons
 // Pneu cantando nas freadas fortes (gravacoes, vale para os dois motores).
 //
@@ -288,6 +288,54 @@ struct MotorVess : Motor {
   }
 };
 
+// ======================= A Maquina (medida no fim de "Welcome to the Machine") =======================
+// Tom A em f com 8 harmonicos (caindo ~10 dB cada), tom B em ~1,22 f (12 dB abaixo) e ruido forte
+// cortado em ~5 f. f: ~105 Hz parado -> ~520 Hz em 39 km/h, continua subindo acima (igual ao app).
+struct MotorMaquina : Motor {
+  static const int NH = 8;
+  const int32_t harm[NH] = { 4096, 1229, 389, 143, 53, 19, 8, 4 };   // Q12: 1 / 0,30 / 0,095 / ...
+  uint32_t faseA = 0, faseB = 0, incA = 0, incB = 0;
+  static const int NP = 6;
+  PassaAlta hp; PassaBaixa lp[NP]; Suave gNz;
+  float f = 105;
+  float KNZ = 1.4f;                                   // nivel do ruido (calibrado no PC contra o app)
+  static uint32_t hz(float f) { return (uint32_t)(f / SR * 4294967296.0f); }
+
+  MotorMaquina() {
+    out.ja(0); out.para(0.17f, 0.08f);
+    hp.freq(70); ajusta(); gNz.ja(KNZ * 1.4f);
+  }
+  void ajusta() {
+    float r = 1.22f + 0.04f * clampf((250 - f) / 150, 0, 1);
+    incA = hz(f); incB = hz(f * r);
+    // 6 polos simples em 6,25 f: imita os 2 passa-baixas de 2 polos do app em 5 f (+-2 dB ate 6 kHz)
+    float fc = f * 6.25f; if (fc > SR * 0.45f) fc = SR * 0.45f;
+    for (int i = 0; i < NP; i++) lp[i].freq(fc);
+  }
+  void update(const Estado& s) override {
+    float v = s.v < 0 ? 0 : (s.v > 70 ? 70 : s.v);
+    float alvo = 105 + 10.6f * v + s.load * 25;
+    float dt = (float)BLOCO * CONTROLE / SR;
+    f += (alvo - f) * (dt / 0.35f > 1 ? 1 : dt / 0.35f);           // desliza
+    ajusta();
+    gNz.para(KNZ * (1.4f - 0.4f * clampf((f - 105) / 415, 0, 1)), 0.1f);
+  }
+  void gera(int n) override {
+    float g0 = gNz.v, g1 = gNz.avanca();
+    int32_t gq = (int32_t)(g0 * 4096), dg = (int32_t)((g1 - g0) * 4096) / n;
+    for (int i = 0; i < n; i++) {
+      gq += dg;
+      faseA += incA; faseB += incB;
+      int32_t a = 0;
+      for (int h = 0; h < NH; h++) a += SENO[(faseA * (uint32_t)(h + 1)) >> 22] * harm[h];
+      a += SENO[faseB >> 22] * 983 + SENO[(faseB * 2u) >> 22] * 172;        // B: 0,24 e 0,042
+      int32_t ru = hp.proc(ruido());
+      for (int k = 0; k < NP; k++) ru = lp[k].proc(ru);
+      buf[i] = (a >> 12) + (int32_t)(((int64_t)ru * gq) >> 12);
+    }
+  }
+};
+
 // ======================= Harley estudio (banco de gravacoes) =======================
 struct MotorBanco : Motor {
   struct Laco { Voz voz; float rpm; };
@@ -425,7 +473,11 @@ struct Mesa {
     return gPneu.v > 0.001f;
   }
 
-  Motor* cria(int id, bool ligando) { return id == 1 ? (Motor*)new MotorBanco(ligando) : (Motor*)new MotorVess(); }
+  Motor* cria(int id, bool ligando) {
+    if (id == 1) return new MotorBanco(ligando);
+    if (id == 2) return new MotorMaquina();
+    return new MotorVess();
+  }
   bool rpmMotor() { return motorId == 1; }
 
   void ligar(bool on) {
@@ -435,7 +487,7 @@ struct Mesa {
     else if (motor) { motor->parar(true); if (saindo) delete saindo; saindo = motor; motor = nullptr; }
   }
   void escolher(int id) {
-    if (id < 0 || id > 1 || id == motorId) return;
+    if (id < 0 || id > 2 || id == motorId) return;
     motorId = id; rpm = rpmMotor() ? 1090 : 0; marcha = 0;
     if (ligado) {
       if (motor) { motor->parar(false); if (saindo) delete saindo; saindo = motor; }
