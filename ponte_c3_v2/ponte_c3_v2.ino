@@ -1,17 +1,18 @@
-// VERSAO: c3v2-202611221130
+// VERSAO: c3v2-202611272300
 /*
   =====================================================================
    PONTE C3 v2 - S16 Companion: ponte BLE + radio 433 + luz de freio + fitas + SOM
    Placa: ESP32-C3 Supermini na PLACA NOVA (pcb_kicad), fixa no monociclo, alimentada pela USB da roda
 
-  >>> v2 (11/11): pinos da placa nova + som (PCM5102A -> PAM8302 -> alto-falante) <<<
-    MAPA DE PINOS DA PLACA NOVA (mudou tudo em relacao a v1, que era em fios):
-      GPIO0 BCK  | GPIO1 DIN  | GPIO2 LCK      -> PCM5102A (I2S)
-      GPIO3 AMP_EN (pelo D2 no SD do amplificador da roda: liga so quando tem som)
-      GPIO4 RX 433 (SRX882S)  | GPIO5 TX 433 (STX882)
-      GPIO21 traseira esquerda (J3) | GPIO20 farol esquerdo (J4) | GPIO10 topo (J5)
-      GPIO7 farol direito (J6) | GPIO6 traseira direita (J7) -> fitas, pelo 74HCT245 (5 V)
-      GPIO8 LED da placa | GPIO9 botao BOOT | livres: nenhum
+  >>> v2: placa v2 (27/11, C3 com as colunas corrigidas) + som (PCM5102A -> amplificador da roda) <<<
+    MAPA DE PINOS DA PLACA v2:
+      GPIO20 BCK | GPIO10 DIN | GPIO7 LCK      -> PCM5102A (I2S)
+      GPIO6 AMP_EN (pelo D2 no SD do amplificador da roda: liga so quando tem som)
+      GPIO5 RX 433 (SRX882S)  | GPIO4 TX 433 (STX882)
+      fitas, pelo 74HCT245 (5 V):
+        GPIO21 traseira esquerda (A1 -> J3) | GPIO0 farol esquerdo (A2 -> J4) | GPIO1 topo (A3 -> J5)
+        GPIO2 farol direito (A4 -> J6)      | GPIO3 traseira direita (A5 -> J7)
+      GPIO8 LED da placa | GPIO9 botao BOOT (os dois sem pino na placa)
       Obs.: o GPIO21 e o TX da UART0: o carregador de boot do chip escreve nele ao ligar,
       entao a traseira esquerda pode piscar um instante no boot. Depois fica normal.
     SOM (som_c3.h + sons_c3.h): tarefa propria do FreeRTOS, nada atrasa o audio.
@@ -40,8 +41,8 @@
     aceso direto    = roda + app(s) conectado(s)
 
   433 MHz (etapa 2) - tudo o que o display v5 fazia com o radio, agora aqui:
-    TX STX882: DATA no GPIO5 (placa nova; na v1 era o GPIO3)
-    RX SRX882S: DATA no GPIO4, VCC e CS no 3V3
+    TX STX882: DATA no GPIO4 (placa v2; na v1 era o GPIO3)
+    RX SRX882S: DATA no GPIO5, VCC e CS no 3V3
     Antenas: 17,3 cm de fio reto (1/4 de onda), longe de metal.
     Controle da buzina (00 9F 1C) -> AA buzina da RODA | 99 pisca esq | CC pisca dir
                                      33 buzina externa | 55 desliga o alarme dela
@@ -54,11 +55,11 @@
   em quadros proprios na FFE1; o C3 manda o estado so para ele. Os apps nao veem.
 
   FITAS DE LED DA RODA (etapa 4, 31/10) - o DATA de cada fita vem do C3:
-    topo (64 LEDs, "U" da frente-esq. ate a frente-dir.)  -> GPIO10 / J5  (v1: GPIO5)
+    topo (64 LEDs, "U" da frente-esq. ate a frente-dir.)  -> GPIO1  / J5  (v1: GPIO5)
     traseira esquerda (23, pixel 0 em cima)               -> GPIO21 / J3  (v1: GPIO6)
-    traseira direita  (23, pixel 0 em cima)               -> GPIO6  / J7  (v1: GPIO7)
-    anel do farol esquerdo (16)                           -> GPIO20 / J4  (v1: GPIO10)
-    anel do farol direito  (16)                           -> GPIO7  / J6  (v1: GPIO20)
+    traseira direita  (23, pixel 0 em cima)               -> GPIO3  / J7  (v1: GPIO7)
+    anel do farol esquerdo (16)                           -> GPIO0  / J4  (v1: GPIO10)
+    anel do farol direito  (16)                           -> GPIO2  / J6  (v1: GPIO20)
     (22/11: fios dispostos topo no meio, farois ao lado, traseiras nas pontas;
      se esquerda/direita ficar invertido, troca so os pares no FITA_PINO)
     (+5V e GND das fitas continuam vindo da roda; DATA desconectado da placa
@@ -91,7 +92,7 @@
 #include "soc/gpio_sig_map.h"
 #include "som_c3.h"           // som: motores, buzinas e pneu no PCM5102A (v2)
 
-static const char* VERSAO = "c3v2-202611221130";
+static const char* VERSAO = "c3v2-202611272300";
 
 // ================= Configuracao (muda pelo Serial: "NOME = valor"; salva na flash) =================
 static String NAME_FILTER = "KS";
@@ -606,8 +607,8 @@ static void processWrites() {
 
 // ================= 433 MHz (etapa 2) =================
 // Mesmo codigo do display v5 (testado), com os pinos do C3.
-static const int      TX433_PIN = 5;     // placa nova (v1: 3)
-static const int      RX433_PIN = 4;
+static const int      TX433_PIN = 4;     // placa v2 (v1: 3)
+static const int      RX433_PIN = 5;     // placa v2
 // Lanternas/piscas: 40 bits [3C 24 06 cmd cmd^05], bit 1 = 990 alto + 330 baixo, 0 = o contrario
 static const uint16_t TX433_CURTO = 330, TX433_LONGO = 990, TX433_SILENCIO = 9000;
 static const int      TX433_REPET = 12;
@@ -832,7 +833,7 @@ static void radio433Setup() {
 // ================= FITAS DE LED DA RODA (etapa 4) =================
 // WS2812 (ordem G R B), 5 V, ~721 kHz na roda; aqui usamos os tempos padrao (800 kHz).
 enum { FITA_TOPO = 0, FITA_TRAS_E, FITA_TRAS_D, FITA_FAROL_E, FITA_FAROL_D, N_FITAS };
-static const int   FITA_PINO[N_FITAS] = { 10, 21, 6, 20, 7 };   // placa nova: J5, J3, J7, J4, J6 (v1: 5, 6, 7, 10, 20)
+static const int   FITA_PINO[N_FITAS] = { 1, 21, 3, 0, 2 };    // placa v2: J5, J3, J7, J4, J6 (v1: 5, 6, 7, 10, 20)
 static const int   FITA_NPX[N_FITAS]  = { 64, 23, 23, 16, 16 };
 static const char* FITA_NOME[N_FITAS] = { "topo", "traseira esq", "traseira dir", "farol esq", "farol dir" };
 static const int   FITA_MAXPX = 64;
@@ -1039,8 +1040,8 @@ static void somSetup() {
   somLigado = prefs.getBool("ligado", false); somMotor = prefs.getInt("motor", 0); somVol = prefs.getInt("vol", 70);
   somPneu = prefs.getBool("pneu", true); somEstouros = prefs.getBool("estouros", true);
   prefs.end();
-  bool ok = som::begin(0, 1, 2, 3);          // BCK, DIN, LCK, AMP_EN
-  Serial.printf("som: %s (I2S GPIO0/1/2, AMP_EN GPIO3) | motor %d | vol %d%% | %s\n", ok ? "ok" : "ERRO no I2S",
+  bool ok = som::begin(20, 10, 7, 6);        // BCK, DIN, LCK, AMP_EN (placa v2)
+  Serial.printf("som: %s (I2S BCK20 DIN10 LCK7, AMP_EN GPIO6) | motor %d | vol %d%% | %s\n", ok ? "ok" : "ERRO no I2S",
                 somMotor, somVol, somLigado ? "LIGADO" : "desligado");
   som::motor(somMotor); som::volume(somVol); som::pneu(somPneu); som::estouros(somEstouros);
   if (somLigado) som::ligar(true);
